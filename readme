@@ -1,0 +1,7 @@
+git status
+3. Agrega cambios
+git add .
+4. Commit
+git commit -m "Describe lo que cambiaste"
+5. Push
+git push
