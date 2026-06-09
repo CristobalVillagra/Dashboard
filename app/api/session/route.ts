@@ -1,12 +1,23 @@
 import { NextResponse } from "next/server"
-import { requireActiveRunner } from "@/lib/runner-auth"
+import { requireActiveUser } from "@/lib/runner-auth"
 
 export async function GET() {
-  const { runner, reason } = await requireActiveRunner({ touch: false })
+  const { user, reason } = await requireActiveUser({ touch: false })
 
-  if (!runner) {
+  if (!user) {
     return NextResponse.json({ authenticated: false, reason }, { status: 401 })
   }
 
-  return NextResponse.json({ authenticated: true, runner })
+  return NextResponse.json({
+    authenticated: true,
+    user,
+    runner:
+      user.rol === "runner"
+        ? {
+            telefono: user.telefono,
+            nombre: user.nombre,
+            area: user.area,
+          }
+        : undefined,
+  })
 }

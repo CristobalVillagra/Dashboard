@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { getSupabaseAdmin } from "@/lib/supabase-admin"
 import { setRunnerCookie } from "@/lib/runner-auth"
+import { normalizeArea } from "@/lib/areas"
 
 function normalizePhone(phone: string) {
   return phone.replace(/[^\d+]/g, "").trim()
@@ -51,36 +52,54 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Codigo incorrecto o expirado." }, { status: 401 })
     }
 
-    const { data: runner, error: runnerError } = await supabase
+    const { data: user, error: userError } = await supabase
       .from("usuarios")
-      .select("telefono,nombre,rol,area")
+      .select("telefono,nombre,rol,area,estado_usuario,local_id")
       .eq("telefono", otp.telefono)
-      .eq("rol", "runner")
+      .in("rol", ["runner", "admin"])
       .single()
 
-    if (runnerError || !runner) {
-      return NextResponse.json({ error: "Runner no autorizado." }, { status: 403 })
+    if (userError || !user) {
+      return NextResponse.json({ error: "Usuario no autorizado." }, { status: 403 })
+    }
+
+    if (user.estado_usuario !== "activo") {
+      return NextResponse.json({ error: "Tu cuenta no esta activa o pendiente de aprobacion." }, { status: 403 })
     }
 
     await supabase.from("otp_sessions").update({ usado: true }).eq("id", otp.id)
     await supabase
       .from("usuarios")
-      .update({ activo: true, ultimo_uso: now })
+      .update({ activo: true, ultimo_uso: now, estado_usuario: "activo" })
       .eq("telefono", otp.telefono)
 
-    await setRunnerCookie({
+    const sessionUser = {
       telefono: otp.telefono,
-      nombre: runner.nombre || "Runner",
-      area: runner.area || null,
-    })
+      nombre: user.nombre || "Usuario",
+      rol: user.rol as "runner" | "admin",
+      area: normalizeArea(user.area),
+      localId: (user.local_id as string | null) || null,
+    }
+
+    await setRunnerCookie(sessionUser)
 
     return NextResponse.json({
       ok: true,
-      runner: {
-        telefono: otp.telefono,
-        nombre: runner.nombre || "Runner",
-        area: runner.area || null,
+      user: {
+        telefono: sessionUser.telefono,
+        nombre: sessionUser.nombre,
+        rol: sessionUser.rol,
+        area: sessionUser.area,
+        localId: sessionUser.localId,
       },
+      runner:
+        sessionUser.rol === "runner"
+          ? {
+              telefono: sessionUser.telefono,
+              nombre: sessionUser.nombre,
+              area: sessionUser.area,
+            }
+          : undefined,
     })
   } catch (error) {
     console.error(error)

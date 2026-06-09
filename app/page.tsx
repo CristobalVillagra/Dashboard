@@ -18,6 +18,22 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import { Checkbox } from "@/components/ui/checkbox"
+import { QuerySortControls } from "@/components/query-sort-controls"
+import { formatAreaLabel } from "@/lib/areas"
+import {
+  filterAntiguasPendingGroups,
+  filterNuevasGroups,
+  listAntiguasRespondedConsultas,
+  type MineRespondedConsulta,
+} from "@/lib/mine-queries"
+import {
+  sortQueryGroups,
+  type QueryGroup,
+  type QuerySortMode,
+} from "@/lib/query-groups"
+import { FixedResponseCard } from "@/components/fixed-response-card"
+import type { FixedResponseRecord } from "@/lib/fixed-responses"
 import {
   Dialog,
   DialogContent,
@@ -36,36 +52,33 @@ type Runner = {
 type Metrics = {
   pendingConsultas: number
   pendingSkus: number
+  myTickets: number
   topSku: string | null
   topSkuCount: number
   answeredToday: number
 }
 
-type QueryGroup = {
-  sku: string
-  marcaProducto: string
-  area: string | null
-  total: number
-  oldestDate: string | null
-  sampleMessage: string
-  pickers: string[]
-  consultaIds: string[]
-}
+type QueryGroupView = QueryGroup
 
-type SortMode = "priority" | "oldest" | "sku"
 type AreaFilter = "all" | "frio" | "sala" | "gm"
+type ViewTab = "available" | "mine" | "fixed"
+type MineSubTab = "nuevas" | "antiguas"
+type AnswerMode = "disponible" | "no_disponible" | "ir_a_revisar"
 
 const emptyMetrics: Metrics = {
   pendingConsultas: 0,
   pendingSkus: 0,
+  myTickets: 0,
   topSku: null,
   topSkuCount: 0,
   answeredToday: 0,
 }
 
+
 export default function RunnerHome() {
   const [checkingSession, setCheckingSession] = useState(true)
   const [runner, setRunner] = useState<Runner | null>(null)
+  const [viewTab, setViewTab] = useState<ViewTab>("available")
   const [telefono, setTelefono] = useState("")
   const [registerName, setRegisterName] = useState("")
   const [registerArea, setRegisterArea] = useState<AreaFilter>("frio")
@@ -75,14 +88,22 @@ export default function RunnerHome() {
   const [devCode, setDevCode] = useState<string | null>(null)
   const [loadingAuth, setLoadingAuth] = useState(false)
   const [loadingData, setLoadingData] = useState(false)
+  const [claimingSku, setClaimingSku] = useState<string | null>(null)
   const [error, setError] = useState("")
   const [metrics, setMetrics] = useState<Metrics>(emptyMetrics)
-  const [groups, setGroups] = useState<QueryGroup[]>([])
-  const [sortMode, setSortMode] = useState<SortMode>("priority")
-  const [areaFilter, setAreaFilter] = useState<AreaFilter>("all")
-  const [selected, setSelected] = useState<QueryGroup | null>(null)
+  const [groups, setGroups] = useState<QueryGroupView[]>([])
+  const [fixedResponses, setFixedResponses] = useState<FixedResponseRecord[]>([])
+  const [sortMode, setSortMode] = useState<QuerySortMode>("newest")
+  const [availableAreaParam, setAvailableAreaParam] = useState("")
+  const [availableAreas, setAvailableAreas] = useState<string[]>([])
+  const [mineSubTab, setMineSubTab] = useState<MineSubTab>("nuevas")
+  const [selected, setSelected] = useState<QueryGroupView | null>(null)
+  const [editingConsulta, setEditingConsulta] = useState<MineRespondedConsulta | null>(null)
+  const [editAnswer, setEditAnswer] = useState("")
+  const [savingEdit, setSavingEdit] = useState(false)
   const [answer, setAnswer] = useState("")
-  const [answerMode, setAnswerMode] = useState<"respondido" | "no_disponible">("respondido")
+  const [answerMode, setAnswerMode] = useState<AnswerMode>("disponible")
+  const [respuestaFija, setRespuestaFija] = useState(false)
   const [savingAnswer, setSavingAnswer] = useState(false)
   const [successMessage, setSuccessMessage] = useState("")
 
@@ -104,20 +125,40 @@ export default function RunnerHome() {
     return data as T
   }
 
-  async function loadQueries() {
+  async function loadQueries(tab: ViewTab = viewTab, area = availableAreaParam) {
     if (!runner) return
 
     setLoadingData(true)
     setError("")
 
     try {
-      const data = await fetchJson<{ metrics: Metrics; groups: QueryGroup[] }>("/api/queries")
+      if (tab === "fixed") {
+        const data = await fetchJson<{ responses: FixedResponseRecord[] }>("/api/queries/fixed-responses")
+        setFixedResponses(data.responses)
+        return
+      }
+
+      const params = new URLSearchParams({ view: tab })
+      if (tab === "available" && area) {
+        params.set("area", area)
+      }
+
+      const data = await fetchJson<{ metrics: Metrics; groups: QueryGroup[]; availableAreas?: string[] }>(
+        `/api/queries?${params}`,
+      )
       setMetrics(data.metrics)
       setGroups(data.groups)
+      if (tab === "available" && data.availableAreas) {
+        setAvailableAreas(data.availableAreas)
+      }
     } catch (currentError) {
-      setRunner(null)
-      setGroups([])
-      setMetrics(emptyMetrics)
+      if (tab === "fixed") {
+        setFixedResponses([])
+      } else {
+        setRunner(null)
+        setGroups([])
+        setMetrics(emptyMetrics)
+      }
       setError(currentError instanceof Error ? currentError.message : "Sesion expirada.")
     } finally {
       setLoadingData(false)
@@ -127,8 +168,17 @@ export default function RunnerHome() {
   useEffect(() => {
     async function checkSession() {
       try {
-        const data = await fetchJson<{ runner: Runner }>("/api/session")
-        setRunner(data.runner)
+        const data = await fetchJson<{
+          runner?: Runner
+          user?: { rol: string }
+        }>("/api/session")
+
+        if (data.user?.rol === "admin") {
+          window.location.href = "/admin"
+          return
+        }
+
+        setRunner(data.runner || null)
       } catch {
         setRunner(null)
       } finally {
@@ -141,9 +191,9 @@ export default function RunnerHome() {
 
   useEffect(() => {
     if (runner) {
-      loadQueries()
+      loadQueries(viewTab, viewTab === "available" ? availableAreaParam : "")
     }
-  }, [runner])
+  }, [runner, viewTab, availableAreaParam])
 
   useEffect(() => {
     if (!runner) return
@@ -156,20 +206,30 @@ export default function RunnerHome() {
   }, [runner])
 
   const visibleGroups = useMemo(() => {
-    const filteredGroups = areaFilter === "all" ? groups : groups.filter((group) => group.area === areaFilter)
+    if (viewTab === "mine") {
+      const filtered =
+        mineSubTab === "nuevas" ? filterNuevasGroups(groups) : filterAntiguasPendingGroups(groups)
+      return sortQueryGroups(filtered, sortMode)
+    }
+    return sortQueryGroups(groups, sortMode)
+  }, [viewTab, mineSubTab, groups, sortMode])
 
-    return [...filteredGroups].sort((a, b) => {
-      if (sortMode === "oldest") {
-        return new Date(a.oldestDate || 0).getTime() - new Date(b.oldestDate || 0).getTime()
-      }
+  const antiguasRespondidas = useMemo(() => {
+    if (viewTab !== "mine" || mineSubTab !== "antiguas") return []
+    return listAntiguasRespondedConsultas(groups)
+  }, [viewTab, mineSubTab, groups])
 
-      if (sortMode === "sku") {
-        return a.sku.localeCompare(b.sku)
-      }
+  const mineListEmpty =
+    mineSubTab === "nuevas"
+      ? visibleGroups.length === 0
+      : visibleGroups.length === 0 && antiguasRespondidas.length === 0
 
-      return b.total - a.total
-    })
-  }, [areaFilter, groups, sortMode])
+  const showEmptyState =
+    viewTab === "available"
+      ? visibleGroups.length === 0
+      : viewTab === "mine"
+        ? mineListEmpty
+        : false
 
   async function requestOtp() {
     setLoadingAuth(true)
@@ -177,7 +237,11 @@ export default function RunnerHome() {
     setSuccessMessage("")
 
     try {
-      const data = await fetchJson<{ devCode?: string; message: string }>("/api/auth/request-otp", {
+      const data = await fetchJson<{
+        devCode?: string
+        message: string
+        pendingApproval?: boolean
+      }>("/api/auth/request-otp", {
         method: "POST",
         body: JSON.stringify({
           telefono,
@@ -186,6 +250,12 @@ export default function RunnerHome() {
         }),
       })
 
+      if (data.pendingApproval) {
+        setNeedsRegistration(false)
+        setSuccessMessage(data.message)
+        return
+      }
+
       setOtpSent(true)
       setNeedsRegistration(false)
       setDevCode(data.devCode || null)
@@ -193,7 +263,7 @@ export default function RunnerHome() {
     } catch (currentError) {
       const message = currentError instanceof Error ? currentError.message : "No se pudo enviar el codigo."
       setError(message)
-      if (message.toLowerCase().includes("nombre") || message.toLowerCase().includes("runner")) {
+      if (message.toLowerCase().includes("nombre") || message.toLowerCase().includes("registrar")) {
         setNeedsRegistration(true)
       }
     } finally {
@@ -207,12 +277,20 @@ export default function RunnerHome() {
     setSuccessMessage("")
 
     try {
-      const data = await fetchJson<{ runner: Runner }>("/api/auth/verify-otp", {
+      const data = await fetchJson<{
+        runner?: Runner
+        user?: { rol: string }
+      }>("/api/auth/verify-otp", {
         method: "POST",
         body: JSON.stringify({ telefono, codigo }),
       })
 
-      setRunner(data.runner)
+      if (data.user?.rol === "admin") {
+        window.location.href = "/admin"
+        return
+      }
+
+      setRunner(data.runner || null)
       setCodigo("")
       setDevCode(null)
       setOtpSent(false)
@@ -232,6 +310,56 @@ export default function RunnerHome() {
     setSuccessMessage("")
   }
 
+  async function claimTicket(group: QueryGroupView) {
+    setClaimingSku(group.sku)
+    setError("")
+
+    try {
+      const data = await fetchJson<{ claimedConsultas: number }>("/api/queries/claim", {
+        method: "POST",
+        body: JSON.stringify({
+          sku: group.sku,
+          consultaIds: group.consultaIds,
+        }),
+      })
+
+      setSuccessMessage(`Tomaste ${data.claimedConsultas} consulta(s) del SKU ${group.sku}.`)
+      setViewTab("mine")
+    } catch (currentError) {
+      setError(currentError instanceof Error ? currentError.message : "No se pudo tomar la consulta.")
+    } finally {
+      setClaimingSku(null)
+    }
+  }
+
+  async function saveEditedAnswer() {
+    if (!editingConsulta) return
+
+    setSavingEdit(true)
+    setError("")
+    setSuccessMessage("")
+
+    try {
+      const data = await fetchJson<{ whatsappOk?: boolean }>(`/api/queries/${editingConsulta.id}/respond`, {
+        method: "PUT",
+        body: JSON.stringify({ respuesta: editAnswer }),
+      })
+
+      if (data.whatsappOk === false) {
+        setSuccessMessage("Respuesta actualizada, pero no se pudo reenviar WhatsApp. Revisa n8n.")
+      } else {
+        setSuccessMessage("Respuesta actualizada y reenviada por WhatsApp.")
+      }
+      setEditingConsulta(null)
+      setEditAnswer("")
+      await loadQueries(viewTab)
+    } catch (currentError) {
+      setError(currentError instanceof Error ? currentError.message : "No se pudo actualizar la respuesta.")
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
   async function saveAnswer() {
     if (!selected) return
 
@@ -239,21 +367,34 @@ export default function RunnerHome() {
     setError("")
 
     try {
-      const data = await fetchJson<{ updatedConsultas: number }>("/api/queries/respond", {
+      const data = await fetchJson<{
+        updatedConsultas: number
+        whatsappOk?: boolean
+        dispatchResults?: Array<{ ok: boolean; status?: number; error?: string }>
+      }>("/api/queries/respond", {
         method: "POST",
         body: JSON.stringify({
           sku: selected.sku,
           consultaIds: selected.consultaIds,
           respuesta: answer,
           estadoRespuesta: answerMode,
+          respuestaFija: respuestaFija && answerMode !== "ir_a_revisar",
         }),
       })
 
-      setSuccessMessage(`Respuesta guardada para ${data.updatedConsultas} consulta(s) del SKU ${selected.sku}.`)
+      if (data.whatsappOk === false) {
+        const firstError = data.dispatchResults?.find((result) => !result.ok)
+        setSuccessMessage(
+          `Respuesta guardada, pero no se pudo enviar WhatsApp al picker. Revisa n8n runner-response-dispatch${firstError?.status ? ` (HTTP ${firstError.status})` : ""}.`,
+        )
+      } else {
+        setSuccessMessage(`Respuesta guardada y enviada por WhatsApp para ${data.updatedConsultas} consulta(s) del SKU ${selected.sku}.`)
+      }
       setSelected(null)
       setAnswer("")
-      setAnswerMode("respondido")
-      await loadQueries()
+      setAnswerMode("disponible")
+      setRespuestaFija(false)
+      await loadQueries(viewTab)
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "No se pudo guardar la respuesta.")
     } finally {
@@ -381,7 +522,7 @@ export default function RunnerHome() {
                 disabled={loadingAuth || (needsRegistration && !otpSent && registerName.trim().length < 2)}
               >
                 {loadingAuth && <RefreshCw className="size-4 animate-spin" />}
-                {otpSent ? "Iniciar sesion" : needsRegistration ? "Registrar y enviar codigo" : "Enviar codigo"}
+                {otpSent ? "Iniciar sesion" : needsRegistration ? "Solicitar registro" : "Enviar codigo"}
               </Button>
             </div>
           </div>
@@ -404,7 +545,7 @@ export default function RunnerHome() {
               variant="outline"
               size="icon"
               className="border-[#cfd9e5] bg-white text-[#476179]"
-              onClick={loadQueries}
+              onClick={() => loadQueries(viewTab)}
               disabled={loadingData}
               title="Actualizar"
             >
@@ -426,44 +567,83 @@ export default function RunnerHome() {
 
       <section className="mx-auto max-w-6xl px-3 py-4 sm:px-6 sm:py-5">
         <div className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-4">
-          <MetricCard icon={MessageCircle} label="Consultas pendientes" value={metrics.pendingConsultas} />
-          <MetricCard icon={PackageSearch} label="SKUs por responder" value={metrics.pendingSkus} />
-          <MetricCard icon={ArrowDownUp} label="SKU mas urgente" value={metrics.topSku || "-"} detail={`${metrics.topSkuCount} consulta(s)`} />
+          <MetricCard icon={MessageCircle} label="Consultas disponibles" value={metrics.pendingConsultas} />
+          <MetricCard icon={PackageSearch} label="SKUs disponibles" value={metrics.pendingSkus} />
+          <MetricCard icon={ArrowDownUp} label="Mis tickets" value={metrics.myTickets} />
           <MetricCard icon={CheckCircle2} label="Respondidas hoy" value={metrics.answeredToday} />
         </div>
 
-        <div className="mt-4 flex flex-col gap-3 rounded-lg border border-[#d8e0ea] bg-white p-3 shadow-sm sm:mt-5 sm:flex-row sm:items-center sm:justify-between sm:p-4">
-          <div className="min-w-0">
-            <h2 className="text-lg font-semibold">Consultas activas</h2>
-            <p className="mt-1 text-sm text-[#5c6f82]">Agrupadas por SKU para responder una sola vez cada producto.</p>
-          </div>
-          <div className="grid w-full grid-cols-3 rounded-md border border-[#cfd9e5] bg-[#f7f9fc] p-1 text-sm sm:w-auto">
-            <SortButton active={sortMode === "priority"} onClick={() => setSortMode("priority")}>
-              Prioridad
-            </SortButton>
-            <SortButton active={sortMode === "oldest"} onClick={() => setSortMode("oldest")}>
-              Antiguas
-            </SortButton>
-            <SortButton active={sortMode === "sku"} onClick={() => setSortMode("sku")}>
-              SKU
-            </SortButton>
-          </div>
+        <div className="mt-4 grid grid-cols-3 rounded-md border border-[#cfd9e5] bg-[#f7f9fc] p-1 text-sm">
+          <SortButton active={viewTab === "available"} onClick={() => setViewTab("available")}>
+            Disponibles
+          </SortButton>
+          <SortButton active={viewTab === "mine"} onClick={() => setViewTab("mine")}>
+            Mis solicitudes
+          </SortButton>
+          <SortButton active={viewTab === "fixed"} onClick={() => setViewTab("fixed")}>
+            Resp. fijas
+          </SortButton>
         </div>
 
-        <div className="mt-3 grid grid-cols-4 rounded-md border border-[#cfd9e5] bg-[#f7f9fc] p-1 text-sm">
-          <SortButton active={areaFilter === "all"} onClick={() => setAreaFilter("all")}>
-            Todas
-          </SortButton>
-          <SortButton active={areaFilter === "frio"} onClick={() => setAreaFilter("frio")}>
-            Frio
-          </SortButton>
-          <SortButton active={areaFilter === "sala"} onClick={() => setAreaFilter("sala")}>
-            Sala
-          </SortButton>
-          <SortButton active={areaFilter === "gm"} onClick={() => setAreaFilter("gm")}>
-            GM
-          </SortButton>
-        </div>
+        {viewTab !== "fixed" && (
+          <div className="mt-4 flex flex-col gap-3 rounded-lg border border-[#d8e0ea] bg-white p-3 shadow-sm sm:mt-5 sm:flex-row sm:items-center sm:justify-between sm:p-4">
+            <div className="min-w-0">
+              <h2 className="text-lg font-semibold">
+                {viewTab === "available" ? "Solicitudes disponibles" : "Mis solicitudes"}
+              </h2>
+              <p className="mt-1 text-sm text-[#5c6f82]">
+                {viewTab === "available"
+                  ? "Toma un ticket para responderlo desde Mis solicitudes."
+                  : "Responde los tickets que tomaste."}
+              </p>
+            </div>
+            <QuerySortControls value={sortMode} onChange={setSortMode} />
+          </div>
+        )}
+
+        {viewTab === "fixed" && (
+          <div className="mt-4 rounded-lg border border-[#d8e0ea] bg-white p-3 shadow-sm sm:p-4">
+            <h2 className="text-lg font-semibold">Respuestas fijas</h2>
+            <p className="mt-1 text-sm text-[#5c6f82]">
+              Respuestas permanentes que no expiran en la limpieza diaria. Referencia completa para consulta.
+            </p>
+          </div>
+        )}
+
+        {viewTab === "mine" && (
+          <div className="mt-3 grid grid-cols-2 rounded-md border border-[#cfd9e5] bg-[#f7f9fc] p-1 text-sm">
+            <SortButton active={mineSubTab === "nuevas"} onClick={() => setMineSubTab("nuevas")}>
+              Nuevas
+            </SortButton>
+            <SortButton active={mineSubTab === "antiguas"} onClick={() => setMineSubTab("antiguas")}>
+              Antiguas
+            </SortButton>
+          </div>
+        )}
+
+        {viewTab === "available" && (
+          <div className="mt-3 rounded-lg border border-[#d8e0ea] bg-white p-3 sm:p-4">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <Label htmlFor="available-area">Area</Label>
+                <p className="text-sm text-[#5c6f82]">Filtra las solicitudes disponibles por area.</p>
+              </div>
+              <select
+                id="available-area"
+                className="h-10 w-full rounded-md border border-[#cfd9e5] bg-white px-3 text-sm sm:max-w-xs"
+                value={availableAreaParam}
+                onChange={(event) => setAvailableAreaParam(event.target.value)}
+              >
+                <option value="">Mi area</option>
+                {availableAreas.map((area) => (
+                  <option key={area} value={area}>
+                    {formatAreaLabel(area)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
 
         {error && (
           <div className="mt-4 flex gap-2 rounded-md border border-[#f2b8b5] bg-[#fff1f0] px-3 py-2 text-sm text-[#9b2c2c]">
@@ -479,53 +659,211 @@ export default function RunnerHome() {
           </div>
         )}
 
-        <div className="mt-4 grid gap-3 lg:grid-cols-2">
-          {visibleGroups.map((group) => (
-            <button
-              key={group.sku}
-              type="button"
-              onClick={() => {
-                setSelected(group)
-                setAnswer("")
-                setAnswerMode("respondido")
-              }}
-              className="min-w-0 rounded-lg border border-[#d8e0ea] bg-white p-3 text-left shadow-sm transition hover:border-[#1f7a5b] hover:shadow-md focus:outline-none focus:ring-2 focus:ring-[#1f7a5b]/30 sm:p-4"
+        {viewTab !== "fixed" && !(viewTab === "mine" && mineSubTab === "antiguas") && (
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            {visibleGroups.map((group) => (
+            <div
+              key={`${viewTab}-${group.sku}-${group.area}-${group.consultaIds.join("-")}`}
+              className="min-w-0 rounded-lg border border-[#d8e0ea] bg-white p-3 shadow-sm sm:p-4"
             >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-[#6b7c8f]">SKU</p>
-                  <h3 className="mt-1 break-all text-lg font-bold leading-snug sm:text-xl">{group.sku}</h3>
-                  {group.marcaProducto && <p className="mt-1 text-sm font-medium text-[#476179]">{group.marcaProducto}</p>}
+              <div className="flex gap-3">
+                <ProductImage url={group.imagenUrl} alt={group.marcaProducto || group.sku} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-[#6b7c8f]">SKU</p>
+                      <h3 className="mt-1 break-all text-lg font-bold leading-snug sm:text-xl">{group.sku}</h3>
+                      {group.marcaProducto && (
+                        <p className="mt-1 text-sm font-medium text-[#476179]">{group.marcaProducto}</p>
+                      )}
+                    </div>
+                    <span className="shrink-0 rounded-md bg-[#e7f5ee] px-2.5 py-1 text-sm font-semibold text-[#1f6a4f]">
+                      {group.total}
+                    </span>
+                  </div>
+                  <p className="mt-3 line-clamp-2 text-sm leading-6 text-[#5c6f82]">
+                    {group.sampleMessage || "Sin mensaje original registrado."}
+                  </p>
+                  <div className="mt-4 flex flex-wrap gap-2 text-xs text-[#476179]">
+                    <span className="rounded-md bg-[#f0f4f8] px-2 py-1">{group.pickers.length} picker(s)</span>
+                    <span className="rounded-md bg-[#e7f5ee] px-2 py-1 font-semibold text-[#1f6a4f]">
+                      {formatArea(group.area)}
+                    </span>
+                    {group.oldestDate && (
+                      <span className="inline-flex items-center gap-1 rounded-md bg-[#f0f4f8] px-2 py-1">
+                        <Clock3 className="size-3" />
+                        {new Date(group.oldestDate).toLocaleTimeString("es-CL", {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-4 flex gap-2">
+                    {viewTab === "available" ? (
+                      <Button
+                        type="button"
+                        className="bg-[#1f7a5b] text-white hover:bg-[#176449]"
+                        onClick={() => claimTicket(group)}
+                        disabled={claimingSku === group.sku}
+                      >
+                        {claimingSku === group.sku && <RefreshCw className="size-4 animate-spin" />}
+                        Tomar
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        className="bg-[#1f7a5b] text-white hover:bg-[#176449]"
+                        onClick={() => {
+                          setSelected(group)
+                          setAnswer("")
+                          setAnswerMode("disponible")
+                          setRespuestaFija(false)
+                        }}
+                      >
+                        Responder
+                      </Button>
+                    )}
+                  </div>
                 </div>
-                <span className="shrink-0 rounded-md bg-[#e7f5ee] px-2.5 py-1 text-sm font-semibold text-[#1f6a4f]">
-                  {group.total}
-                </span>
               </div>
-              <p className="mt-3 line-clamp-2 text-sm leading-6 text-[#5c6f82]">
-                {group.sampleMessage || "Sin mensaje original registrado."}
-              </p>
-              <div className="mt-4 flex flex-wrap gap-2 text-xs text-[#476179]">
-                <span className="rounded-md bg-[#f0f4f8] px-2 py-1">{group.pickers.length} picker(s)</span>
-                <span className="rounded-md bg-[#e7f5ee] px-2 py-1 font-semibold text-[#1f6a4f]">{formatArea(group.area)}</span>
-                {group.oldestDate && (
-                  <span className="inline-flex items-center gap-1 rounded-md bg-[#f0f4f8] px-2 py-1">
-                    <Clock3 className="size-3" />
-                    {new Date(group.oldestDate).toLocaleTimeString("es-CL", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </span>
-                )}
-              </div>
-            </button>
-          ))}
-        </div>
+            </div>
+            ))}
+          </div>
+        )}
 
-        {!loadingData && visibleGroups.length === 0 && (
+        {viewTab === "mine" && mineSubTab === "antiguas" && (
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            {antiguasRespondidas.map((consulta) => (
+              <div
+                key={consulta.id}
+                className="min-w-0 rounded-lg border border-[#d8e0ea] bg-white p-3 shadow-sm sm:p-4"
+              >
+                <div className="flex gap-3">
+                  <ProductImage url={consulta.imagenUrl} alt={consulta.marcaProducto || consulta.sku} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-[#6b7c8f]">SKU</p>
+                        <h3 className="mt-1 break-all text-lg font-bold leading-snug sm:text-xl">{consulta.sku}</h3>
+                        {consulta.marcaProducto && (
+                          <p className="mt-1 text-sm font-medium text-[#476179]">{consulta.marcaProducto}</p>
+                        )}
+                      </div>
+                      <span className="shrink-0 rounded-md bg-[#eefaf3] px-2.5 py-1 text-xs font-semibold text-[#1f6a4f]">
+                        Respondida
+                      </span>
+                    </div>
+                    <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-[#5c6f82]">
+                      {consulta.respuesta_runner || "Sin respuesta registrada."}
+                    </p>
+                    <div className="mt-4 flex flex-wrap gap-2 text-xs text-[#476179]">
+                      <span className="rounded-md bg-[#f0f4f8] px-2 py-1">{formatAreaLabel(consulta.area)}</span>
+                      {consulta.assigned_at && (
+                        <span className="inline-flex items-center gap-1 rounded-md bg-[#f0f4f8] px-2 py-1">
+                          <Clock3 className="size-3" />
+                          {new Date(consulta.assigned_at).toLocaleString("es-CL")}
+                        </span>
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="mt-4"
+                      onClick={() => {
+                        setEditingConsulta(consulta)
+                        setEditAnswer(consulta.respuesta_runner || "")
+                      }}
+                    >
+                      Editar respuesta
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {visibleGroups.map((group) => (
+              <div
+                key={`antiguas-pending-${group.sku}-${group.area}-${group.consultaIds.join("-")}`}
+                className="min-w-0 rounded-lg border border-[#d8e0ea] bg-white p-3 shadow-sm sm:p-4"
+              >
+                <div className="flex gap-3">
+                  <ProductImage url={group.imagenUrl} alt={group.marcaProducto || group.sku} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-[#6b7c8f]">SKU</p>
+                        <h3 className="mt-1 break-all text-lg font-bold leading-snug sm:text-xl">{group.sku}</h3>
+                        {group.marcaProducto && (
+                          <p className="mt-1 text-sm font-medium text-[#476179]">{group.marcaProducto}</p>
+                        )}
+                      </div>
+                      <span className="shrink-0 rounded-md bg-[#fff8e7] px-2.5 py-1 text-sm font-semibold text-[#745015]">
+                        {group.total}
+                      </span>
+                    </div>
+                    <p className="mt-3 line-clamp-2 text-sm leading-6 text-[#5c6f82]">
+                      {group.sampleMessage || "Sin mensaje original registrado."}
+                    </p>
+                    <div className="mt-4 flex flex-wrap gap-2 text-xs text-[#476179]">
+                      <span className="rounded-md bg-[#f0f4f8] px-2 py-1">{group.pickers.length} picker(s)</span>
+                      <span className="rounded-md bg-[#e7f5ee] px-2 py-1 font-semibold text-[#1f6a4f]">
+                        {formatArea(group.area)}
+                      </span>
+                    </div>
+                    <Button
+                      type="button"
+                      className="mt-4 bg-[#1f7a5b] text-white hover:bg-[#176449]"
+                      onClick={() => {
+                        setSelected(group)
+                        setAnswer("")
+                        setAnswerMode("disponible")
+                        setRespuestaFija(false)
+                      }}
+                    >
+                      Responder
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {viewTab === "fixed" && (
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            {fixedResponses.map((response) => (
+              <FixedResponseCard key={response.id} response={response} />
+            ))}
+          </div>
+        )}
+
+        {!loadingData && viewTab === "fixed" && fixedResponses.length === 0 && (
           <div className="mt-4 rounded-lg border border-[#d8e0ea] bg-white p-8 text-center shadow-sm">
             <CheckCircle2 className="mx-auto size-10 text-[#1f7a5b]" />
-            <h3 className="mt-3 text-lg font-semibold">No hay consultas pendientes</h3>
-            <p className="mt-1 text-sm text-[#5c6f82]">Cuando entren nuevos SKUs apareceran aqui automaticamente al actualizar.</p>
+            <h3 className="mt-3 text-lg font-semibold">No hay respuestas fijas</h3>
+            <p className="mt-1 text-sm text-[#5c6f82]">
+              Marca una respuesta como fija al responder un ticket para que quede registrada aqui.
+            </p>
+          </div>
+        )}
+
+        {!loadingData && viewTab !== "fixed" && showEmptyState && (
+          <div className="mt-4 rounded-lg border border-[#d8e0ea] bg-white p-8 text-center shadow-sm">
+            <CheckCircle2 className="mx-auto size-10 text-[#1f7a5b]" />
+            <h3 className="mt-3 text-lg font-semibold">
+              {viewTab === "available"
+                ? "No hay solicitudes disponibles"
+                : mineSubTab === "nuevas"
+                  ? "No tienes tickets nuevos asignados"
+                  : "No tienes solicitudes antiguas"}
+            </h3>
+            <p className="mt-1 text-sm text-[#5c6f82]">
+              {viewTab === "available"
+                ? "Cuando entren nuevos SKUs apareceran aqui."
+                : mineSubTab === "nuevas"
+                  ? "Toma tickets desde la pestana Disponibles."
+                  : "Las consultas respondidas hace mas de 24 horas apareceran aqui."}
+            </p>
           </div>
         )}
       </section>
@@ -534,25 +872,31 @@ export default function RunnerHome() {
         <DialogContent className="max-h-[90vh] w-[calc(100vw-24px)] overflow-y-auto bg-white text-[#142033] sm:max-w-lg">
           <DialogHeader>
             <DialogTitle className="break-all">Responder SKU {selected?.sku}</DialogTitle>
-            <DialogDescription>
-              Esta respuesta se guardara solo en las consultas seleccionadas de este SKU y area.
-            </DialogDescription>
+            <DialogDescription>Esta respuesta se enviara a los pickers asociados a este ticket.</DialogDescription>
           </DialogHeader>
           {selected && (
             <div className="space-y-4">
-              <div className="rounded-md border border-[#d8e0ea] bg-[#f7f9fc] p-3">
-                <p className="text-sm font-semibold">{selected.total} consulta(s) pendientes</p>
-                <p className="mt-1 text-sm text-[#476179]">
-                  {selected.marcaProducto || "Producto no registrado"} - {formatArea(selected.area)}
-                </p>
-                <p className="mt-2 text-sm leading-6 text-[#5c6f82]">{selected.sampleMessage || "Sin mensaje original."}</p>
+              <div className="flex gap-3 rounded-md border border-[#d8e0ea] bg-[#f7f9fc] p-3">
+                <ProductImage url={selected.imagenUrl} alt={selected.marcaProducto || selected.sku} size="sm" />
+                <div>
+                  <p className="text-sm font-semibold">{selected.total} consulta(s) asignadas</p>
+                  <p className="mt-1 text-sm text-[#476179]">
+                    {selected.marcaProducto || "Producto no registrado"} - {formatArea(selected.area)}
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-[#5c6f82]">
+                    {selected.sampleMessage || "Sin mensaje original."}
+                  </p>
+                </div>
               </div>
-              <div className="grid grid-cols-2 rounded-md border border-[#cfd9e5] bg-[#f7f9fc] p-1 text-sm">
-                <SortButton active={answerMode === "respondido"} onClick={() => setAnswerMode("respondido")}>
+              <div className="grid grid-cols-3 rounded-md border border-[#cfd9e5] bg-[#f7f9fc] p-1 text-sm">
+                <SortButton active={answerMode === "disponible"} onClick={() => setAnswerMode("disponible")}>
                   Disponible
                 </SortButton>
                 <SortButton active={answerMode === "no_disponible"} onClick={() => setAnswerMode("no_disponible")}>
                   No disponible
+                </SortButton>
+                <SortButton active={answerMode === "ir_a_revisar"} onClick={() => setAnswerMode("ir_a_revisar")}>
+                  Ir a revisar
                 </SortButton>
               </div>
               <div className="space-y-2">
@@ -564,11 +908,19 @@ export default function RunnerHome() {
                   placeholder={
                     answerMode === "no_disponible"
                       ? "Opcional: producto no disponible en esta area."
-                      : "Ej: Disponible en pasillo 20 o usar producto alternativo ABC."
+                      : answerMode === "ir_a_revisar"
+                        ? "Ej: Revisar en pasillo 12, posible cambio de ubicacion."
+                        : "Ej: Disponible en pasillo 20 o usar producto alternativo ABC."
                   }
                   className="min-h-32 border-[#cfd9e5] bg-white text-base text-[#142033]"
                 />
               </div>
+              {answerMode !== "ir_a_revisar" && (
+                <label className="flex items-center gap-2 text-sm text-[#476179]">
+                  <Checkbox checked={respuestaFija} onCheckedChange={(checked) => setRespuestaFija(checked === true)} />
+                  Marcar como respuesta fija (no expira en la limpieza diaria)
+                </label>
+              )}
             </div>
           )}
           <DialogFooter className="gap-2 sm:gap-0">
@@ -579,7 +931,10 @@ export default function RunnerHome() {
               type="button"
               className="bg-[#1f7a5b] text-white hover:bg-[#176449]"
               onClick={saveAnswer}
-              disabled={savingAnswer || (answerMode === "respondido" && answer.trim().length < 2)}
+              disabled={
+                savingAnswer ||
+                (answerMode === "disponible" && answer.trim().length < 2)
+              }
             >
               {savingAnswer && <RefreshCw className="size-4 animate-spin" />}
               Aceptar
@@ -587,7 +942,87 @@ export default function RunnerHome() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={Boolean(editingConsulta)} onOpenChange={(open) => !open && setEditingConsulta(null)}>
+        <DialogContent className="max-h-[90vh] w-[calc(100vw-24px)] overflow-y-auto bg-white text-[#142033] sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="break-all">Editar respuesta SKU {editingConsulta?.sku}</DialogTitle>
+            <DialogDescription>
+              La actualizacion se reenviara por WhatsApp a los pickers que consultaron este SKU hoy.
+            </DialogDescription>
+          </DialogHeader>
+          {editingConsulta && (
+            <div className="space-y-4">
+              <div className="rounded-md border border-[#d8e0ea] bg-[#f7f9fc] p-3 text-sm text-[#476179]">
+                {formatAreaLabel(editingConsulta.area)}
+                {editingConsulta.assigned_at && (
+                  <span className="ml-2">
+                    - Asignada {new Date(editingConsulta.assigned_at).toLocaleString("es-CL")}
+                  </span>
+                )}
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-respuesta">Respuesta actualizada</Label>
+                <Textarea
+                  id="edit-respuesta"
+                  value={editAnswer}
+                  onChange={(event) => setEditAnswer(event.target.value)}
+                  className="min-h-32 border-[#cfd9e5] bg-white text-base text-[#142033]"
+                />
+              </div>
+            </div>
+          )}
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button type="button" variant="outline" onClick={() => setEditingConsulta(null)} disabled={savingEdit}>
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              className="bg-[#1f7a5b] text-white hover:bg-[#176449]"
+              onClick={saveEditedAnswer}
+              disabled={savingEdit || editAnswer.trim().length < 2}
+            >
+              {savingEdit && <RefreshCw className="size-4 animate-spin" />}
+              Guardar cambios
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </main>
+  )
+}
+
+function ProductImage({
+  url,
+  alt,
+  size = "md",
+}: {
+  url?: string | null
+  alt: string
+  size?: "sm" | "md"
+}) {
+  const [failed, setFailed] = useState(false)
+  const className =
+    size === "sm"
+      ? "flex size-16 shrink-0 items-center justify-center rounded-md border border-[#d8e0ea] bg-[#f7f9fc]"
+      : "flex size-20 shrink-0 items-center justify-center rounded-md border border-[#d8e0ea] bg-[#f7f9fc]"
+
+  if (!url || failed) {
+    return (
+      <div className={className} title={alt}>
+        <PackageSearch className="size-6 text-[#8aa0b5]" />
+      </div>
+    )
+  }
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={url}
+      alt={alt}
+      className={`${className} object-cover`}
+      onError={() => setFailed(true)}
+    />
   )
 }
 
@@ -640,6 +1075,5 @@ function formatArea(area: string | null) {
   if (area === "frio") return "Frio"
   if (area === "sala") return "Sala"
   if (area === "gm") return "GM"
-
   return "Sin area"
 }

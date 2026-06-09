@@ -1,8 +1,18 @@
 import { NextResponse } from "next/server"
 import { getSupabaseAdmin } from "@/lib/supabase-admin"
 import { requireActiveRunner } from "@/lib/runner-auth"
+import { dispatchRunnerResponse } from "@/lib/n8n-dispatch"
+import { normalizeArea } from "@/lib/areas"
 
 const validSkuPattern = /^[A-Z0-9_-]{2,32}$/
+
+type EstadoRespuesta = "disponible" | "no_disponible" | "ir_a_revisar"
+
+function mapEstadoConsulta(estadoRespuesta: EstadoRespuesta) {
+  if (estadoRespuesta === "no_disponible") return "no_disponible"
+  if (estadoRespuesta === "ir_a_revisar") return "en_revision"
+  return "respondido"
+}
 
 export async function POST(request: Request) {
   const { runner, reason } = await requireActiveRunner()
@@ -12,49 +22,103 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { sku, respuesta, consultaIds, estadoRespuesta } = await request.json()
+    const { sku, respuesta, consultaIds, estadoRespuesta, respuestaFija } = await request.json()
     const cleanSku = String(sku || "").trim().toUpperCase()
     const cleanAnswer = String(respuesta || "").trim()
-    const cleanEstado = estadoRespuesta === "no_disponible" ? "no_disponible" : "respondido"
+    const cleanEstado: EstadoRespuesta =
+      estadoRespuesta === "no_disponible"
+        ? "no_disponible"
+        : estadoRespuesta === "ir_a_revisar"
+          ? "ir_a_revisar"
+          : "disponible"
+    const isFixed = Boolean(respuestaFija)
     const ids = Array.isArray(consultaIds) ? consultaIds.map((id) => String(id).trim()).filter(Boolean) : []
 
-    if (!validSkuPattern.test(cleanSku) || ids.length === 0 || (cleanEstado === "respondido" && cleanAnswer.length < 2)) {
+    if (!validSkuPattern.test(cleanSku) || ids.length === 0) {
+      return NextResponse.json({ error: "Ingresa una respuesta valida." }, { status: 400 })
+    }
+
+    if (cleanEstado === "disponible" && cleanAnswer.length < 2) {
       return NextResponse.json({ error: "Ingresa una respuesta valida." }, { status: 400 })
     }
 
     const supabase = getSupabaseAdmin()
     const now = new Date().toISOString()
 
-    const { data: pendingRows, error: selectError } = await supabase
+    const { data: assignedRows, error: selectError } = await supabase
       .from("consultas_sku")
-      .select("id,sku,marca_producto,area,estado,respuesta_runner")
+      .select("id,sku,marca_producto,area,estado,telefono_runner,local_id")
       .in("id", ids)
-      .is("respuesta_runner", null)
-      .eq("estado", "pendiente")
+      .eq("telefono_runner", runner.telefono)
+      .in("estado", ["tomada", "en_revision"])
 
     if (selectError) throw selectError
 
-    const pendingIds = (pendingRows || [])
-      .filter((row) => {
-        const rowSku = String(row.sku || "").trim().toUpperCase()
-        const isOpen = !["respondido", "respondida", "resuelta", "cerrada", "cancelada", "no_disponible"].includes(
-          String(row.estado || "").toLowerCase(),
-        )
-
-        return rowSku === cleanSku && isOpen
-      })
+    const assignedIds = (assignedRows || [])
+      .filter((row) => String(row.sku || "").trim().toUpperCase() === cleanSku)
       .map((row) => row.id)
 
-    if (pendingIds.length === 0) {
-      return NextResponse.json({ error: "Este SKU ya no tiene consultas pendientes." }, { status: 409 })
+    if (assignedIds.length === 0) {
+      return NextResponse.json({ error: "No tienes tickets asignados para este SKU." }, { status: 403 })
     }
 
-    const firstPending = pendingRows?.find((row) => pendingIds.includes(row.id))
-    const responseText = cleanEstado === "no_disponible" ? cleanAnswer || "Producto no disponible." : cleanAnswer
-    const responseArea = String(firstPending?.area || "").trim().toLowerCase() || null
-    const responseBrand = String(firstPending?.marca_producto || "").trim() || null
+    const firstAssigned = assignedRows?.find((row) => assignedIds.includes(row.id))
+    const responseText =
+      cleanEstado === "no_disponible"
+        ? cleanAnswer || "Producto no disponible."
+        : cleanEstado === "ir_a_revisar"
+          ? cleanAnswer || "Ir a revisar en sala."
+          : cleanAnswer
+    const responseArea = normalizeArea(firstAssigned?.area) || null
+    const responseBrand = String(firstAssigned?.marca_producto || "").trim() || null
+    const consultaEstado = mapEstadoConsulta(cleanEstado)
 
-    if (responseText) {
+    try {
+      if (cleanEstado === "no_disponible") {
+        const { data: product } = await supabase
+          .from("sku_productos")
+          .select("sku,reportes_no_disponible")
+          .eq("sku", cleanSku)
+          .maybeSingle()
+
+        if (product) {
+          await supabase
+            .from("sku_productos")
+            .update({
+              reportes_no_disponible: Number(product.reportes_no_disponible || 0) + 1,
+              ultimo_reporte_no_disponible: now,
+              ultimo_estado_reportado: "no_disponible",
+              updated_at: now,
+            })
+            .eq("sku", cleanSku)
+        } else {
+          await supabase.from("sku_productos").insert({
+            sku: cleanSku,
+            marca_producto: responseBrand,
+            area: responseArea,
+            activo: true,
+            reportes_no_disponible: 1,
+            ultimo_reporte_no_disponible: now,
+            ultimo_estado_reportado: "no_disponible",
+            local_id: firstAssigned?.local_id || runner.localId || null,
+            created_at: now,
+            updated_at: now,
+          })
+        }
+      } else if (cleanEstado === "disponible") {
+        await supabase
+          .from("sku_productos")
+          .update({
+            ultimo_estado_reportado: "disponible",
+            updated_at: now,
+          })
+          .eq("sku", cleanSku)
+      }
+    } catch (productReportError) {
+      console.warn("No se pudo actualizar reporte de producto", cleanSku, productReportError)
+    }
+
+    if (cleanEstado !== "ir_a_revisar") {
       const { error: deactivateError } = await supabase
         .from("sku_respuestas")
         .update({ activo: false })
@@ -69,10 +133,13 @@ export async function POST(request: Request) {
         area: responseArea,
         respuesta: responseText,
         activo: true,
-        expires_at: new Date(Date.now() + 14 * 60 * 60 * 1000).toISOString(),
+        respuesta_fija: isFixed,
+        estado_respuesta: cleanEstado === "no_disponible" ? "no_disponible" : "disponible",
+        expires_at: isFixed ? null : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
         telefono_runner: runner.telefono,
         nombre_runner: runner.nombre,
         ultima_respuesta_en: now,
+        local_id: firstAssigned?.local_id || runner.localId || null,
       })
 
       if (answerError) throw answerError
@@ -82,20 +149,31 @@ export async function POST(request: Request) {
       .from("consultas_sku")
       .update({
         respuesta_runner: responseText,
-        estado: cleanEstado,
+        estado: consultaEstado,
+        estado_respuesta: cleanEstado,
+        respuesta_fija: isFixed,
         responded_at: now,
         whatsapp_enviado: false,
         telefono_runner: runner.telefono,
         nombre_runner: runner.nombre,
       })
-      .in("id", pendingIds)
+      .in("id", assignedIds)
 
     if (updateError) throw updateError
+
+    const dispatchResults = []
+    for (const consultaId of assignedIds) {
+      const localId = firstAssigned?.local_id || runner.localId || null
+      const result = await dispatchRunnerResponse(consultaId, localId)
+      dispatchResults.push({ consultaId, ...result })
+    }
 
     return NextResponse.json({
       ok: true,
       sku: cleanSku,
-      updatedConsultas: pendingIds.length,
+      updatedConsultas: assignedIds.length,
+      whatsappOk: dispatchResults.every((result) => result.ok),
+      dispatchResults,
     })
   } catch (error) {
     console.error(error)

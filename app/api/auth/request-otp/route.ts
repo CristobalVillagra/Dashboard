@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { getSupabaseAdmin } from "@/lib/supabase-admin"
 import { generateOtpCode } from "@/lib/runner-auth"
+import { normalizeArea } from "@/lib/areas"
 
 function normalizePhone(phone: string) {
   return phone.replace(/[^\d+]/g, "").trim()
@@ -29,58 +30,82 @@ export async function POST(request: Request) {
     const phone = normalizePhone(String(telefono || ""))
     const phones = phoneVariants(phone)
     const cleanName = String(nombre || "").trim()
-    const cleanArea = String(area || "").trim().toLowerCase()
+    const cleanArea = normalizeArea(area)
 
     if (phone.length < 8) {
       return NextResponse.json({ error: "Ingresa un numero de celular valido." }, { status: 400 })
     }
 
-    if (cleanArea && !["frio", "sala", "gm"].includes(cleanArea)) {
+    if (area && !cleanArea) {
       return NextResponse.json({ error: "Selecciona un area valida." }, { status: 400 })
     }
 
     const supabase = getSupabaseAdmin()
-    let { data: runner, error: runnerError } = await supabase
+    const { data: existingUser, error: userError } = await supabase
       .from("usuarios")
-      .select("telefono,nombre,rol,area,activo")
+      .select("telefono,nombre,rol,area,activo,estado_usuario,local_id")
       .in("telefono", phones)
-      .eq("rol", "runner")
+      .in("rol", ["runner", "admin"])
       .maybeSingle()
 
-    if (runnerError) throw runnerError
+    if (userError) throw userError
 
-    if (!runner && (!cleanName || !cleanArea)) {
+    if (!existingUser && (!cleanName || !cleanArea)) {
       return NextResponse.json(
         { error: "Completa nombre y area para registrar este runner.", needsRegistration: true },
         { status: 404 },
       )
     }
 
-    if (!runner) {
-      const runnerPhone = phones.find((variant) => variant.startsWith("+56")) || phones.find((variant) => variant.startsWith("56")) || phone
-      const { data: createdRunner, error: createError } = await supabase
-        .from("usuarios")
-        .insert({
-          telefono: runnerPhone,
-          nombre: cleanName,
-          rol: "runner",
-          area: cleanArea,
-          activo: false,
-          creado_en: new Date().toISOString(),
-        })
-        .select("telefono,nombre,rol,area,activo")
-        .single()
+    if (!existingUser) {
+      const runnerPhone =
+        phones.find((variant) => variant.startsWith("+56")) ||
+        phones.find((variant) => variant.startsWith("56")) ||
+        phone
+
+      const { data: local } = await supabase.from("locales").select("id").eq("codigo", "55").maybeSingle()
+
+      const { error: createError } = await supabase.from("usuarios").insert({
+        telefono: runnerPhone,
+        nombre: cleanName,
+        rol: "runner",
+        area: cleanArea,
+        activo: false,
+        estado_usuario: "pendiente_aprobacion",
+        local_id: local?.id || null,
+        creado_en: new Date().toISOString(),
+      })
 
       if (createError) throw createError
-      runner = createdRunner
+
+      return NextResponse.json({
+        ok: true,
+        pendingApproval: true,
+        message: "Registro enviado. Un administrador debe aprobar tu cuenta antes de solicitar el codigo.",
+      })
+    }
+
+    if (existingUser.estado_usuario === "pendiente_aprobacion") {
+      return NextResponse.json(
+        { error: "Tu registro esta pendiente de aprobacion por un administrador." },
+        { status: 403 },
+      )
+    }
+
+    if (existingUser.estado_usuario === "rechazado") {
+      return NextResponse.json({ error: "Tu registro fue rechazado. Contacta al administrador." }, { status: 403 })
+    }
+
+    if (existingUser.estado_usuario !== "activo") {
+      return NextResponse.json({ error: "Tu cuenta no esta activa. Contacta al administrador." }, { status: 403 })
     }
 
     const code = generateOtpCode()
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString()
-    const runnerPhone = runner.telefono
+    const userPhone = existingUser.telefono
 
     const { error: insertError } = await supabase.from("otp_sessions").insert({
-      telefono: runnerPhone,
+      telefono: userPhone,
       codigo: code,
       usado: false,
       expira_en: expiresAt,
@@ -94,7 +119,7 @@ export async function POST(request: Request) {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          telefono: runnerPhone,
+          telefono: userPhone,
           codigo: code,
           mensaje: `Tu codigo de acceso runner es ${code}. Expira en 10 minutos.`,
         }),

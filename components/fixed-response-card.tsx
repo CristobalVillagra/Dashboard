@@ -1,0 +1,75 @@
+"use client"
+
+import { useState, type ReactNode } from "react"
+import { ImagePlus } from "lucide-react"
+import type { FixedResponseRecord } from "@/lib/fixed-responses"
+import { formatAreaLabel } from "@/lib/areas"
+
+export function FixedResponseCard({
+  response,
+  actions,
+}: {
+  response: FixedResponseRecord
+  actions?: ReactNode
+}) {
+  return (
+    <div className={`rounded-lg border border-[#d8e0ea] bg-white p-4 ${response.activo ? "" : "opacity-70"}`}>
+      <div className="flex gap-3">
+        <FixedResponseImage url={response.imagen_url} alt={response.marca_producto || response.sku} />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="font-semibold break-all">SKU {response.sku}</p>
+              {response.marca_producto && (
+                <p className="mt-1 text-sm font-medium text-[#476179]">{response.marca_producto}</p>
+              )}
+            </div>
+            {response.respuesta_fija && (
+              <span className="shrink-0 rounded-md bg-[#e7f5ee] px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-[#1f6a4f]">
+                Respuesta fija
+              </span>
+            )}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2 text-xs text-[#476179]">
+            <span className="rounded-md bg-[#f0f4f8] px-2 py-1">{formatAreaLabel(response.area)}</span>
+            {response.nombre_runner && (
+              <span className="rounded-md bg-[#f0f4f8] px-2 py-1">Runner: {response.nombre_runner}</span>
+            )}
+            {!response.activo && (
+              <span className="rounded-md bg-[#fff1f0] px-2 py-1 font-semibold text-[#9b2c2c]">Inactiva</span>
+            )}
+          </div>
+          <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-[#5c6f82]">
+            {response.respuesta}
+          </p>
+          {actions && <div className="mt-3">{actions}</div>}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function FixedResponseImage({ url, alt }: { url: string | null; alt: string }) {
+  const [failed, setFailed] = useState(false)
+
+  if (!url || failed) {
+    return (
+      <div
+        className="flex size-20 shrink-0 items-center justify-center rounded-md border border-[#d8e0ea] bg-[#f7f9fc]"
+        title={alt}
+      >
+        <ImagePlus className="size-6 text-[#8aa0b5]" />
+      </div>
+    )
+  }
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={url}
+      alt={alt}
+      className="size-20 shrink-0 rounded-md border border-[#d8e0ea] bg-[#f7f9fc] object-cover"
+      onError={() => setFailed(true)}
+    />
+  )
+}
