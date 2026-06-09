@@ -44,13 +44,22 @@ export async function dispatchRunnerResponse(consultaId: string | number, localI
   }
 }
 
-export async function dispatchRunnerResponseUpdate(consultaId: string | number, textoNuevo: string) {
-  const webhookUrl = process.env.N8N_RUNNER_DISPATCH_WEBHOOK_URL
+function resolveUpdateWebhookUrl() {
+  if (process.env.N8N_RUNNER_RESPONSE_UPDATE_WEBHOOK_URL) {
+    return process.env.N8N_RUNNER_RESPONSE_UPDATE_WEBHOOK_URL
+  }
+
+  const dispatchUrl = process.env.N8N_RUNNER_DISPATCH_WEBHOOK_URL
+  return dispatchUrl?.replace(/runner-response-dispatch\/?$/, "runner-response-update")
+}
+
+export async function dispatchRunnerResponseUpdate(consultaId: string | number, textoNuevo: string, sku: string) {
+  const webhookUrl = resolveUpdateWebhookUrl()
   const secret = process.env.N8N_WEBHOOK_SECRET
 
   if (!webhookUrl) {
-    console.warn("N8N_RUNNER_DISPATCH_WEBHOOK_URL no configurada; WhatsApp no se despachara automaticamente.")
-    return { ok: false, skipped: true, status: 0, error: "N8N_RUNNER_DISPATCH_WEBHOOK_URL no configurada." }
+    console.warn("N8N_RUNNER_RESPONSE_UPDATE_WEBHOOK_URL no configurada; WhatsApp no se despachara automaticamente.")
+    return { ok: false, skipped: true, status: 0, error: "N8N_RUNNER_RESPONSE_UPDATE_WEBHOOK_URL no configurada." }
   }
 
   try {
@@ -58,12 +67,12 @@ export async function dispatchRunnerResponseUpdate(consultaId: string | number, 
       method: "POST",
       headers: {
         "content-type": "application/json",
-        ...(secret ? { "x-webhook-secret": secret } : {}),
       },
       body: JSON.stringify({
         consulta_id: String(consultaId),
-        tipo: "actualizacion",
         texto_nuevo: textoNuevo,
+        sku,
+        secret,
       }),
     })
 

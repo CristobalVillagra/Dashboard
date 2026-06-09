@@ -35,10 +35,28 @@ export function FixedResponseCard({
             {response.nombre_runner && (
               <span className="rounded-md bg-[#f0f4f8] px-2 py-1">Runner: {response.nombre_runner}</span>
             )}
+            {typeof response.reportes_no_disponible === "number" && response.reportes_no_disponible > 0 && (
+              <span className="rounded-md bg-[#fff8e7] px-2 py-1 font-semibold text-[#745015]">
+                {response.reportes_no_disponible} reporte(s) no disponible
+              </span>
+            )}
+            {response.reporte_multiples_runners && (
+              <span className="rounded-md bg-[#fff1f0] px-2 py-1 font-semibold text-[#9b2c2c]">
+                {response.runners_reportando} runners reportaron (7d)
+              </span>
+            )}
+            {response.reporte_stale && (
+              <span className="rounded-md bg-[#fff1f0] px-2 py-1 font-semibold text-[#9b2c2c]">
+                Sin stock hace +3 dias
+              </span>
+            )}
             {!response.activo && (
               <span className="rounded-md bg-[#fff1f0] px-2 py-1 font-semibold text-[#9b2c2c]">Inactiva</span>
             )}
           </div>
+          {response.nombre_producto && (
+            <p className="mt-2 text-sm font-medium text-[#476179]">Catalogo: {response.nombre_producto}</p>
+          )}
           <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-[#5c6f82]">
             {response.respuesta}
           </p>

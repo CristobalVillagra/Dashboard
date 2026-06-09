@@ -33,6 +33,7 @@ import {
   type QuerySortMode,
 } from "@/lib/query-groups"
 import { FixedResponseCard } from "@/components/fixed-response-card"
+import { FixedResponseManager } from "@/components/fixed-response-manager"
 import type { FixedResponseRecord } from "@/lib/fixed-responses"
 import {
   Dialog,
@@ -332,6 +333,15 @@ export default function RunnerHome() {
     }
   }
 
+  async function updateRunnerFixedResponse(payload: { id: string; activo?: boolean; respuesta?: string }) {
+    await fetchJson("/api/queries/fixed-responses", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    })
+    setSuccessMessage("Respuesta fija actualizada.")
+    await loadQueries("fixed")
+  }
+
   async function saveEditedAnswer() {
     if (!editingConsulta) return
 
@@ -369,6 +379,7 @@ export default function RunnerHome() {
     try {
       const data = await fetchJson<{
         updatedConsultas: number
+        estadoRespuesta?: AnswerMode
         whatsappOk?: boolean
         dispatchResults?: Array<{ ok: boolean; status?: number; error?: string }>
       }>("/api/queries/respond", {
@@ -388,7 +399,11 @@ export default function RunnerHome() {
           `Respuesta guardada, pero no se pudo enviar WhatsApp al picker. Revisa n8n runner-response-dispatch${firstError?.status ? ` (HTTP ${firstError.status})` : ""}.`,
         )
       } else {
-        setSuccessMessage(`Respuesta guardada y enviada por WhatsApp para ${data.updatedConsultas} consulta(s) del SKU ${selected.sku}.`)
+        setSuccessMessage(
+          answerMode === "ir_a_revisar"
+            ? `Aviso enviado al picker. El ticket del SKU ${selected.sku} sigue abierto para confirmar disponible/no disponible.`
+            : `Respuesta definitiva guardada y enviada por WhatsApp para ${data.updatedConsultas} consulta(s) del SKU ${selected.sku}.`,
+        )
       }
       setSelected(null)
       setAnswer("")
@@ -832,7 +847,19 @@ export default function RunnerHome() {
         {viewTab === "fixed" && (
           <div className="mt-4 grid gap-3 lg:grid-cols-2">
             {fixedResponses.map((response) => (
-              <FixedResponseCard key={response.id} response={response} />
+              <FixedResponseCard
+                key={response.id}
+                response={response}
+                actions={
+                  runner && response.telefono_runner === runner.telefono ? (
+                    <FixedResponseManager
+                      response={response}
+                      canEdit
+                      onUpdate={updateRunnerFixedResponse}
+                    />
+                  ) : undefined
+                }
+              />
             ))}
           </div>
         )}
@@ -909,7 +936,7 @@ export default function RunnerHome() {
                     answerMode === "no_disponible"
                       ? "Opcional: producto no disponible en esta area."
                       : answerMode === "ir_a_revisar"
-                        ? "Ej: Revisar en pasillo 12, posible cambio de ubicacion."
+                        ? "Ej: Estamos revisando el producto en sala. Te avisamos por este chat."
                         : "Ej: Disponible en pasillo 20 o usar producto alternativo ABC."
                   }
                   className="min-h-32 border-[#cfd9e5] bg-white text-base text-[#142033]"

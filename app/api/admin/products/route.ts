@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server"
+import { insightFromProductRow } from "@/lib/fixed-responses"
 import { getSupabaseAdmin } from "@/lib/supabase-admin"
 import { requireActiveAdmin } from "@/lib/runner-auth"
+import { renameProductSku } from "@/lib/product-sku"
 import { normalizeArea } from "@/lib/areas"
 
 const imageBucket = "product-images"
@@ -50,6 +52,7 @@ async function parseProductPayload(request: Request) {
     const sku = String(form.get("sku") || "").trim().toUpperCase()
     return {
       sku,
+      newSku: String(form.get("newSku") || "").trim().toUpperCase(),
       nombreProducto: String(form.get("nombreProducto") || "").trim(),
       marcaProducto: String(form.get("marcaProducto") || "").trim(),
       area: String(form.get("area") || "").trim(),
@@ -81,7 +84,61 @@ export async function GET() {
     return NextResponse.json({ error: "No se pudo cargar el catalogo." }, { status: 500 })
   }
 
-  return NextResponse.json({ products: data || [] })
+  const products = data || []
+  const skus = products.map((p) => String(p.sku).trim().toUpperCase())
+
+  const fixedMap = new Map<string, { respuesta: string; activo: boolean | null; nombre_runner: string | null; estado_respuesta: string | null }>()
+  const runnerCountMap = new Map<string, number>()
+
+  if (skus.length > 0) {
+    const { data: fixedRows } = await supabase
+      .from("sku_respuestas")
+      .select("sku,respuesta,activo,nombre_runner,estado_respuesta")
+      .in("sku", skus)
+      .eq("respuesta_fija", true)
+      .eq("activo", true)
+
+    for (const row of fixedRows || []) {
+      fixedMap.set(String(row.sku).trim().toUpperCase(), {
+        respuesta: String(row.respuesta || ""),
+        activo: row.activo as boolean | null,
+        nombre_runner: (row.nombre_runner as string | null) || null,
+        estado_respuesta: (row.estado_respuesta as string | null) || null,
+      })
+    }
+
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+    const { data: reportRows } = await supabase
+      .from("consultas_sku")
+      .select("sku,telefono_runner")
+      .in("sku", skus)
+      .eq("estado_respuesta", "no_disponible")
+      .gte("responded_at", sevenDaysAgo)
+
+    const temp = new Map<string, Set<string>>()
+    for (const row of reportRows || []) {
+      const sku = String(row.sku).trim().toUpperCase()
+      const runner = String(row.telefono_runner || "").trim()
+      if (!sku || !runner) continue
+      temp.set(sku, temp.get(sku) || new Set<string>())
+      temp.get(sku)!.add(runner)
+    }
+    for (const [sku, runners] of temp.entries()) {
+      runnerCountMap.set(sku, runners.size)
+    }
+  }
+
+  const enriched = products.map((product) => {
+    const skuKey = String(product.sku).trim().toUpperCase()
+    const insight = insightFromProductRow(
+      product,
+      fixedMap.get(skuKey),
+      runnerCountMap.get(skuKey) || 0,
+    )
+    return { ...product, ...insight }
+  })
+
+  return NextResponse.json({ products: enriched })
 }
 
 export async function POST(request: Request) {
@@ -140,14 +197,28 @@ export async function PATCH(request: Request) {
   }
 
   try {
-    const { sku, nombreProducto, marcaProducto, area, imagenUrl, imagen, activo } = await parseProductPayload(request)
+    const { sku, newSku, nombreProducto, marcaProducto, area, imagenUrl, imagen, activo } =
+      await parseProductPayload(request)
     const cleanSku = String(sku || "").trim().toUpperCase()
+    const cleanNewSku = String(newSku || "").trim().toUpperCase()
 
     if (!validSku(cleanSku)) {
       return NextResponse.json({ error: "SKU requerido o invalido." }, { status: 400 })
     }
 
-    const uploadedImageUrl = imagen instanceof File && imagen.size > 0 ? await uploadProductImage(imagen, cleanSku) : null
+    if (cleanNewSku && !validSku(cleanNewSku)) {
+      return NextResponse.json({ error: "Nuevo SKU invalido." }, { status: 400 })
+    }
+
+    const supabase = getSupabaseAdmin()
+
+    if (cleanNewSku && cleanNewSku !== cleanSku) {
+      await renameProductSku(supabase, cleanSku, cleanNewSku)
+    }
+
+    const targetSku = cleanNewSku && cleanNewSku !== cleanSku ? cleanNewSku : cleanSku
+    const uploadedImageUrl =
+      imagen instanceof File && imagen.size > 0 ? await uploadProductImage(imagen, targetSku) : null
 
     const updates: Record<string, string | boolean | null> = {
       updated_at: new Date().toISOString(),
@@ -156,20 +227,21 @@ export async function PATCH(request: Request) {
     if (nombreProducto !== undefined) updates.nombre_producto = String(nombreProducto || "").trim() || null
     if (marcaProducto !== undefined) updates.marca_producto = String(marcaProducto || "").trim() || null
     if (area !== undefined) updates.area = normalizeArea(area)
-    if (uploadedImageUrl || imagenUrl !== undefined) updates.imagen_url = uploadedImageUrl || String(imagenUrl || "").trim() || null
+    if (uploadedImageUrl || imagenUrl !== undefined) {
+      updates.imagen_url = uploadedImageUrl || String(imagenUrl || "").trim() || null
+    }
     if (activo !== undefined) updates.activo = activo === true || activo === "true"
 
-    const supabase = getSupabaseAdmin()
     const { data, error } = await supabase
       .from("sku_productos")
       .update(updates)
-      .eq("sku", cleanSku)
+      .eq("sku", targetSku)
       .select("sku,nombre_producto,marca_producto,area,imagen_url,activo")
       .single()
 
     if (error) throw error
 
-    return NextResponse.json({ ok: true, product: data })
+    return NextResponse.json({ ok: true, product: data, renamed: targetSku !== cleanSku, oldSku: cleanSku })
   } catch (error) {
     console.error(error)
     return NextResponse.json(

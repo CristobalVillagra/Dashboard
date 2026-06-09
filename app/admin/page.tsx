@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { FixedResponseCard } from "@/components/fixed-response-card"
+import { FixedResponseManager } from "@/components/fixed-response-manager"
 import { QuerySortControls } from "@/components/query-sort-controls"
 import type { FixedResponseRecord } from "@/lib/fixed-responses"
 import { formatAreaLabel } from "@/lib/areas"
@@ -54,6 +55,13 @@ type Product = {
   reportes_no_disponible?: number | null
   ultimo_reporte_no_disponible?: string | null
   ultimo_estado_reportado?: string | null
+  fixed_respuesta?: string | null
+  fixed_activo?: boolean | null
+  fixed_runner?: string | null
+  fixed_estado?: string | null
+  runners_reportando?: number
+  reporte_stale?: boolean
+  reporte_multiples_runners?: boolean
 }
 
 type FixedResponse = FixedResponseRecord
@@ -331,9 +339,15 @@ export default function AdminPage() {
     await loadTab("users")
   }
 
-  async function updateProduct(product: Product, updates: Partial<Product>, image?: File | null) {
+  async function updateProduct(
+    product: Product,
+    updates: Partial<Product>,
+    image?: File | null,
+    newSku?: string,
+  ) {
     const formData = new FormData()
     formData.append("sku", product.sku)
+    if (newSku && newSku !== product.sku) formData.append("newSku", newSku)
     formData.append("nombreProducto", updates.nombre_producto ?? product.nombre_producto ?? "")
     formData.append("marcaProducto", updates.marca_producto ?? product.marca_producto ?? "")
     formData.append("area", updates.area ?? product.area ?? "")
@@ -345,15 +359,16 @@ export default function AdminPage() {
       method: "PATCH",
       body: formData,
     })
-    setSuccess(`Producto ${product.sku} actualizado.`)
+    setSuccess(`Producto ${newSku && newSku !== product.sku ? newSku : product.sku} actualizado.`)
     await loadTab("products")
   }
 
-  async function toggleFixedResponse(response: FixedResponse) {
+  async function updateFixedResponse(payload: { id: string; activo?: boolean; respuesta?: string }) {
     await fetchJson("/api/admin/fixed-responses", {
       method: "PATCH",
-      body: JSON.stringify({ id: response.id, activo: !response.activo }),
+      body: JSON.stringify(payload),
     })
+    setSuccess("Respuesta fija actualizada.")
     await loadTab("fixed")
   }
 
@@ -672,11 +687,7 @@ export default function AdminPage() {
               <FixedResponseCard
                 key={response.id}
                 response={response}
-                actions={
-                  <Button size="sm" variant="outline" onClick={() => toggleFixedResponse(response)}>
-                    {response.activo ? "Desactivar" : "Activar"}
-                  </Button>
-                }
+                actions={<FixedResponseManager response={response} canEdit onUpdate={updateFixedResponse} />}
               />
             ))}
           </div>
@@ -762,8 +773,9 @@ function ProductEditor({
   onSave,
 }: {
   product: Product
-  onSave: (product: Product, updates: Partial<Product>, image?: File | null) => Promise<void>
+  onSave: (product: Product, updates: Partial<Product>, image?: File | null, newSku?: string) => Promise<void>
 }) {
+  const [sku, setSku] = useState(product.sku)
   const [nombre, setNombre] = useState(product.nombre_producto || "")
   const [marca, setMarca] = useState(product.marca_producto || "")
   const [area, setArea] = useState(product.area || "frio")
@@ -778,7 +790,6 @@ function ProductEditor({
         <ProductThumb url={product.imagen_url} alt={product.nombre_producto || product.sku} />
         <div className="min-w-0 flex-1">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <p className="font-semibold">SKU {product.sku}</p>
             <label className="flex items-center gap-2 text-sm text-[#476179]">
               <input type="checkbox" checked={activo} onChange={(e) => setActivo(e.target.checked)} />
               Activo
@@ -796,8 +807,30 @@ function ProductEditor({
                 Ultimo reporte: {new Date(product.ultimo_reporte_no_disponible).toLocaleString("es-CL")}
               </span>
             )}
+            {product.reporte_multiples_runners && (
+              <span className="rounded-md bg-[#fff1f0] px-2 py-1 font-semibold text-[#9b2c2c]">
+                {product.runners_reportando} runners reportaron (7d)
+              </span>
+            )}
+            {product.reporte_stale && (
+              <span className="rounded-md bg-[#fff1f0] px-2 py-1 font-semibold text-[#9b2c2c]">
+                Sin stock hace +3 dias
+              </span>
+            )}
           </div>
+          {product.fixed_respuesta && (
+            <div className="mt-3 rounded-md border border-[#d8e0ea] bg-[#f7f9fc] p-3">
+              <p className="text-xs font-semibold uppercase text-[#1f6a4f]">Respuesta fija activa</p>
+              <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-[#5c6f82]">
+                {product.fixed_respuesta}
+              </p>
+              {product.fixed_runner && (
+                <p className="mt-1 text-xs text-[#476179]">Runner: {product.fixed_runner}</p>
+              )}
+            </div>
+          )}
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <Input placeholder="SKU" value={sku} onChange={(e) => setSku(e.target.value.toUpperCase())} />
             <Input placeholder="Nombre" value={nombre} onChange={(e) => setNombre(e.target.value)} />
             <Input placeholder="Marca" value={marca} onChange={(e) => setMarca(e.target.value)} />
             <select
@@ -833,7 +866,7 @@ function ProductEditor({
                 area,
                 imagen_url: imageUrl,
                 activo,
-              }, image)
+              }, image, sku.trim().toUpperCase() !== product.sku ? sku.trim().toUpperCase() : undefined)
               setImage(null)
               setSaving(false)
             }}

@@ -1,0 +1,72 @@
+﻿{
+    "name":  "Bot SKU - Reinicio diario stock",
+    "nodes":  [
+                  {
+                      "parameters":  {
+                                         "rule":  {
+                                                      "interval":  [
+                                                                       {
+                                                                           "field":  "hours",
+                                                                           "hoursInterval":  24
+                                                                       }
+                                                                   ]
+                                                  }
+                                     },
+                      "id":  "schedule-reset",
+                      "name":  "Cada 24 horas",
+                      "type":  "n8n-nodes-base.scheduleTrigger",
+                      "typeVersion":  1.2,
+                      "position":  [
+                                       0,
+                                       220
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "operation":  "executeQuery",
+                                         "query":  "select * from public.bot_sku_jornada_cleanup();",
+                                         "options":  {
+
+                                                     }
+                                     },
+                      "id":  "reset-cache-stock",
+                      "name":  "Reiniciar cache stock",
+                      "type":  "n8n-nodes-base.postgres",
+                      "typeVersion":  2.5,
+                      "position":  [
+                                       280,
+                                       220
+                                   ],
+                      "credentials":  {
+                                          "postgres":  {
+                                                           "id":  "",
+                                                           "name":  "Postgres Supabase/EasyPanel"
+                                                       }
+                                      }
+                  }
+              ],
+    "connections":  {
+                        "Cada 24 horas":  {
+                                              "main":  [
+                                                           [
+                                                               {
+                                                                   "node":  "Reiniciar cache stock",
+                                                                   "type":  "main",
+                                                                   "index":  0
+                                                               }
+                                                           ]
+                                                       ]
+                                          }
+                    },
+    "settings":  {
+                     "executionOrder":  "v1"
+                 },
+    "pinData":  {
+
+                },
+    "versionId":  "bot-sku-reset-diario-stock-template",
+    "triggerCount":  0,
+    "tags":  [
+
+             ]
+}

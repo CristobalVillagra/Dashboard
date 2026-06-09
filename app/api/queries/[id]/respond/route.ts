@@ -24,7 +24,7 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
     const supabase = getSupabaseAdmin()
     const { data: consulta, error: selectError } = await supabase
       .from("consultas_sku")
-      .select("id,estado,telefono_runner,assigned_at,local_id")
+      .select("id,sku,estado,telefono_runner,assigned_at,local_id")
       .eq("id", consultaId)
       .maybeSingle()
 
@@ -52,7 +52,7 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
 
     if (updateError) throw updateError
 
-    const dispatch = await dispatchRunnerResponseUpdate(consultaId, cleanAnswer)
+    const dispatch = await dispatchRunnerResponseUpdate(consultaId, cleanAnswer, String(consulta.sku || ""))
 
     return NextResponse.json({
       ok: true,

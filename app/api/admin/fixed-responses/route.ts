@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { listFixedResponses } from "@/lib/fixed-responses"
+import { listFixedResponses, updateFixedResponse } from "@/lib/fixed-responses"
 import { getSupabaseAdmin } from "@/lib/supabase-admin"
 import { requireActiveAdmin } from "@/lib/runner-auth"
 
@@ -28,25 +28,29 @@ export async function PATCH(request: Request) {
   }
 
   try {
-    const { id, activo } = await request.json()
+    const { id, activo, respuesta } = await request.json()
 
     if (!id) {
       return NextResponse.json({ error: "ID requerido." }, { status: 400 })
     }
 
     const supabase = getSupabaseAdmin()
-    const { data, error } = await supabase
-      .from("sku_respuestas")
-      .update({ activo: Boolean(activo) })
-      .eq("id", id)
-      .select("id,sku,respuesta,activo,respuesta_fija")
-      .single()
-
-    if (error) throw error
+    const data = await updateFixedResponse(
+      supabase,
+      String(id),
+      {
+        activo: activo !== undefined ? Boolean(activo) : undefined,
+        respuesta: respuesta !== undefined ? String(respuesta) : undefined,
+      },
+      { allowAnyRunner: true },
+    )
 
     return NextResponse.json({ ok: true, response: data })
   } catch (error) {
     console.error(error)
-    return NextResponse.json({ error: "No se pudo actualizar la respuesta." }, { status: 500 })
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "No se pudo actualizar la respuesta." },
+      { status: 500 },
+    )
   }
 }

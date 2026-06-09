@@ -17,12 +17,14 @@ export async function GET(request: Request) {
   const areaParam = new URL(request.url).searchParams.get("area")
   const supabase = getSupabaseAdmin()
   const runnerArea = normalizeArea(runner.area)
+  const activeWindowStart = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
 
   let query = supabase
     .from("consultas_sku")
     .select(
       "id,sku,marca_producto,area,telefono_picker,mensaje_original,estado,respuesta_runner,created_at,assigned_at",
     )
+    .gte("created_at", activeWindowStart)
     .order("created_at", { ascending: true })
     .limit(1000)
 
@@ -98,9 +100,10 @@ export async function GET(request: Request) {
     const { data: areaRows } = await supabase
       .from("consultas_sku")
       .select("area")
-      .eq("estado", "pendiente_sin_asignar")
-      .is("telefono_runner", null)
-      .not("area", "is", null)
+    .eq("estado", "pendiente_sin_asignar")
+    .is("telefono_runner", null)
+    .gte("created_at", activeWindowStart)
+    .not("area", "is", null)
 
     availableAreas = Array.from(
       new Set(

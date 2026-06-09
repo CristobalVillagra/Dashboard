@@ -67,7 +67,7 @@ export async function POST(request: Request) {
       cleanEstado === "no_disponible"
         ? cleanAnswer || "Producto no disponible."
         : cleanEstado === "ir_a_revisar"
-          ? cleanAnswer || "Ir a revisar en sala."
+          ? cleanAnswer || "Estamos revisando el producto. Te avisaremos por este mismo chat cuando el runner confirme disponibilidad."
           : cleanAnswer
     const responseArea = normalizeArea(firstAssigned?.area) || null
     const responseBrand = String(firstAssigned?.marca_producto || "").trim() || null
@@ -119,44 +119,41 @@ export async function POST(request: Request) {
     }
 
     if (cleanEstado !== "ir_a_revisar") {
-      const { error: deactivateError } = await supabase
-        .from("sku_respuestas")
-        .update({ activo: false })
-        .eq("sku", cleanSku)
-        .eq("activo", true)
-
-      if (deactivateError) throw deactivateError
-
-      const { error: answerError } = await supabase.from("sku_respuestas").insert({
-        sku: cleanSku,
-        marca_producto: responseBrand,
-        area: responseArea,
-        respuesta: responseText,
-        activo: true,
-        respuesta_fija: isFixed,
-        estado_respuesta: cleanEstado === "no_disponible" ? "no_disponible" : "disponible",
-        expires_at: isFixed ? null : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-        telefono_runner: runner.telefono,
-        nombre_runner: runner.nombre,
-        ultima_respuesta_en: now,
-        local_id: firstAssigned?.local_id || runner.localId || null,
-      })
+      const { error: answerError } = await supabase.from("sku_respuestas").upsert(
+        {
+          sku: cleanSku,
+          marca_producto: responseBrand,
+          area: responseArea,
+          respuesta: responseText,
+          activo: true,
+          respuesta_fija: isFixed,
+          estado_respuesta: cleanEstado === "no_disponible" ? "no_disponible" : "disponible",
+          expires_at: isFixed ? null : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+          telefono_runner: runner.telefono,
+          nombre_runner: runner.nombre,
+          ultima_respuesta_en: now,
+          local_id: firstAssigned?.local_id || runner.localId || null,
+        },
+        { onConflict: "sku" },
+      )
 
       if (answerError) throw answerError
     }
 
+    const updates: Record<string, string | boolean | null> = {
+      respuesta_runner: responseText,
+      estado: consultaEstado,
+      estado_respuesta: cleanEstado,
+      respuesta_fija: isFixed,
+      responded_at: cleanEstado === "ir_a_revisar" ? null : now,
+      whatsapp_enviado: false,
+      telefono_runner: runner.telefono,
+      nombre_runner: runner.nombre,
+    }
+
     const { error: updateError } = await supabase
       .from("consultas_sku")
-      .update({
-        respuesta_runner: responseText,
-        estado: consultaEstado,
-        estado_respuesta: cleanEstado,
-        respuesta_fija: isFixed,
-        responded_at: now,
-        whatsapp_enviado: false,
-        telefono_runner: runner.telefono,
-        nombre_runner: runner.nombre,
-      })
+      .update(updates)
       .in("id", assignedIds)
 
     if (updateError) throw updateError
@@ -171,6 +168,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ok: true,
       sku: cleanSku,
+      estadoRespuesta: cleanEstado,
       updatedConsultas: assignedIds.length,
       whatsappOk: dispatchResults.every((result) => result.ok),
       dispatchResults,
