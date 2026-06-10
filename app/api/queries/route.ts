@@ -6,6 +6,12 @@ import { requireActiveRunner } from "@/lib/runner-auth"
 
 const validSkuPattern = /^[A-Z0-9_-]{2,32}$/
 
+type ProductInfo = {
+  imagen_url: string | null
+  nombre_producto: string | null
+  marca_producto: string | null
+}
+
 export async function GET(request: Request) {
   const { runner, reason } = await requireActiveRunner()
 
@@ -22,7 +28,7 @@ export async function GET(request: Request) {
   let query = supabase
     .from("consultas_sku")
     .select(
-      "id,sku,marca_producto,area,telefono_picker,mensaje_original,estado,respuesta_runner,created_at,assigned_at",
+      "id,sku,marca_producto,area,telefono_picker,mensaje_original,estado,respuesta_runner,created_at,assigned_at,local_id",
     )
     .gte("created_at", activeWindowStart)
     .order("created_at", { ascending: true })
@@ -59,25 +65,48 @@ export async function GET(request: Request) {
   })
 
   const skus = Array.from(new Set(rows.map((row) => String(row.sku).trim().toUpperCase())))
-  const imageMap = new Map<string, string | null>()
+  const productMap = new Map<string, ProductInfo>()
 
   if (skus.length > 0) {
-    const { data: products } = await supabase
+    let productQuery = supabase
       .from("sku_productos")
-      .select("sku,imagen_url")
+      .select("sku,imagen_url,nombre_producto,marca_producto")
       .in("sku", skus)
+      .eq("activo", true)
+
+    if (runner.localId) {
+      productQuery = productQuery.eq("local_id", runner.localId)
+    }
+
+    const { data: products, error: productsError } = await productQuery
+
+    if (productsError) {
+      console.error(productsError)
+      return NextResponse.json({ error: "No se pudieron cargar los productos." }, { status: 500 })
+    }
 
     for (const product of products || []) {
-      imageMap.set(String(product.sku).toUpperCase(), (product.imagen_url as string | null) || null)
+      productMap.set(String(product.sku).trim().toUpperCase(), {
+        imagen_url: (product.imagen_url as string | null) || null,
+        nombre_producto: (product.nombre_producto as string | null) || null,
+        marca_producto: (product.marca_producto as string | null) || null,
+      })
     }
   }
 
-  const rowsWithImages = rows.map((row) => ({
-    ...row,
-    imagen_url: imageMap.get(String(row.sku).trim().toUpperCase()) || null,
-  }))
+  const enrichedRows = rows.map((row) => {
+    const skuKey = String(row.sku).trim().toUpperCase()
+    const product = productMap.get(skuKey)
 
-  const groups = groupConsultasBySku(rowsWithImages)
+    return {
+      ...row,
+      imagen_url: product?.imagen_url ?? null,
+      nombre_producto: product?.nombre_producto ?? null,
+      marca_producto: product?.marca_producto ?? row.marca_producto ?? null,
+    }
+  })
+
+  const groups = groupConsultasBySku(enrichedRows)
   const today = new Date()
   today.setHours(0, 0, 0, 0)
 
@@ -100,10 +129,10 @@ export async function GET(request: Request) {
     const { data: areaRows } = await supabase
       .from("consultas_sku")
       .select("area")
-    .eq("estado", "pendiente_sin_asignar")
-    .is("telefono_runner", null)
-    .gte("created_at", activeWindowStart)
-    .not("area", "is", null)
+      .eq("estado", "pendiente_sin_asignar")
+      .is("telefono_runner", null)
+      .gte("created_at", activeWindowStart)
+      .not("area", "is", null)
 
     availableAreas = Array.from(
       new Set(

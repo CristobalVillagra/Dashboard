@@ -1,232 +1,218 @@
 {
-    "name":  "Bot SKU - Entrada WhatsApp",
-    "nodes":  [
-                  {
-                      "parameters":  {
-                                         "httpMethod":  "POST",
-                                         "path":  "whatsapp-webhook",
-                                         "responseMode":  "responseNode",
-                                         "options":  {
-
-                                                     }
-                                     },
-                      "id":  "webhook-evolution",
-                      "name":  "Webhook Evolution",
-                      "type":  "n8n-nodes-base.webhook",
-                      "typeVersion":  2,
-                      "position":  [
-                                       0,
-                                       280
-                                   ]
-                  },
-                  {
-                      "parameters":  {
-                                         "jsCode":  "const body = $json.body || $json;\nconst data = body.data || {};\nconst message = data.message || {};\nconst key = data.key || {};\n\nconst rawMessage = body.sku ?? body.message ?? body.text ?? message.conversation ?? message.extendedTextMessage?.text ?? message.imageMessage?.caption ?? \u0027\u0027;\nconst mensaje = String(rawMessage || \u0027\u0027).trim();\nconst normalized = mensaje.normalize(\u0027NFD\u0027).replace(/[\\u0300-\\u036f]/g, \u0027\u0027).trim();\nconst upper = normalized.toUpperCase();\nconst fromMe = key.fromMe === true || body.fromMe === true;\nconst looksLikeOtp = /CODIGO DE ACCESO RUNNER|EXPIRA EN/i.test(normalized);\n\nconst areaAliases = new Map([\n  [\u0027FRIO\u0027, \u0027frio\u0027],\n  [\u0027SALA\u0027, \u0027sala\u0027],\n  [\u0027GM\u0027, \u0027gm\u0027],\n]);\n\nlet tipo = \u0027invalid\u0027;\nlet sku = null;\nlet area = null;\n\nif (/^(SI|S|YES|Y)$/i.test(upper)) {\n  tipo = \u0027yes\u0027;\n} else if (/^(NO|N)$/i.test(upper)) {\n  tipo = \u0027no\u0027;\n} else if (areaAliases.has(upper)) {\n  tipo = \u0027area\u0027;\n  area = areaAliases.get(upper);\n} else if (/^[A-Z0-9_-]{2,32}$/.test(upper)) {\n  tipo = \u0027sku\u0027;\n  sku = upper;\n}\n\nif (fromMe || looksLikeOtp) {\n  tipo = \u0027ignore\u0027;\n}\n\nconst remoteJid = body.phone ?? body.telefono ?? key.remoteJid ?? data.remoteJid ?? \u0027\u0027;\nconst telefono = String(remoteJid || \u0027\u0027).replace(\u0027@s.whatsapp.net\u0027, \u0027\u0027).replace(\u0027@c.us\u0027, \u0027\u0027).trim();\nconst instancia = body.instance ?? body.instanceName ?? data.instance ?? \u0027\u0027;\n\nreturn [{\n  json: {\n    tipo,\n    sku,\n    area,\n    telefono,\n    instancia,\n    mensaje_original: mensaje,\n    timestamp: new Date().toISOString()\n  }\n}];"
-                                     },
-                      "id":  "parsear-mensaje",
-                      "name":  "Parsear mensaje",
-                      "type":  "n8n-nodes-base.code",
-                      "typeVersion":  2,
-                      "position":  [
-                                       260,
-                                       280
-                                   ]
-                  },
-                  {
-                      "parameters":  {
-                                         "operation":  "executeQuery",
-                                         "query":  "with input as (\n  select\n    $1::text as telefono,\n    $2::text as tipo,\n    $3::text as sku,\n    $4::text as area,\n    $5::text as mensaje_original,\n    $6::text as instancia\n), cleanup as (\n  delete from public.picker_sku_context\n  where updated_at \u003c now() - interval \u002730 minutes\u0027\n), ctx as (\n  select c.*\n  from public.picker_sku_context c, input i\n  where c.telefono = i.telefono\n  limit 1\n), product_info as (\n  select sp.sku, sp.nombre_producto, sp.marca_producto, sp.area\n  from public.sku_productos sp\n  join input i on upper(sp.sku) = upper(coalesce(i.sku, (select sku from ctx)))\n  where sp.activo = true\n  limit 1\n), active_response as (\n  select\n    sr.id::text as id,\n    sr.sku,\n    coalesce(nullif(sp.nombre_producto, \u0027\u0027), nullif(sr.marca_producto, \u0027\u0027)) as nombre_producto,\n    coalesce(nullif(sp.marca_producto, \u0027\u0027), nullif(sr.marca_producto, \u0027\u0027)) as marca_producto,\n    coalesce(nullif(sp.area, \u0027\u0027), sr.area) as area,\n    sr.respuesta,\n    sr.estado_respuesta\n  from public.sku_respuestas sr\n  left join public.sku_productos sp on upper(sp.sku) = upper(sr.sku)\n  join input i on true\n  where i.tipo = \u0027sku\u0027\n    and upper(sr.sku) = upper(i.sku)\n    and sr.activo = true\n    and (sr.respuesta_fija = true or sr.expires_at is null or sr.expires_at \u003e now())\n  order by sr.created_at desc, sr.id desc\n  limit 1\n), confirmed_response as (\n  select\n    sr.id::text as id,\n    sr.sku,\n    coalesce(nullif(sp.nombre_producto, \u0027\u0027), nullif(sr.marca_producto, \u0027\u0027)) as nombre_producto,\n    coalesce(nullif(sp.marca_producto, \u0027\u0027), nullif(sr.marca_producto, \u0027\u0027)) as marca_producto,\n    coalesce(nullif(sp.area, \u0027\u0027), sr.area) as area,\n    sr.respuesta,\n    sr.estado_respuesta\n  from public.sku_respuestas sr\n  left join public.sku_productos sp on upper(sp.sku) = upper(sr.sku)\n  join ctx on ctx.respuesta_id = sr.id::text\n  join input i on true\n  where i.tipo = \u0027yes\u0027\n    and ctx.estado = \u0027confirmar_respuesta\u0027\n    and sr.activo = true\n    and (sr.respuesta_fija = true or sr.expires_at is null or sr.expires_at \u003e now())\n  limit 1\n), insert_no_disponible_log as (\n  insert into public.consultas_sku (\n    sku,\n    marca_producto,\n    area,\n    telefono_picker,\n    mensaje_original,\n    instancia,\n    estado,\n    estado_respuesta,\n    respuesta_runner,\n    whatsapp_enviado,\n    respuesta_fija,\n    local_id,\n    created_at,\n    responded_at\n  )\n  select\n    ar.sku,\n    coalesce(nullif(ar.nombre_producto, \u0027\u0027), nullif(ar.marca_producto, \u0027\u0027)),\n    ar.area,\n    i.telefono,\n    i.mensaje_original,\n    i.instancia,\n    \u0027no_disponible\u0027,\n    \u0027no_disponible\u0027,\n    ar.respuesta,\n    true,\n    true,\n    (select id from public.locales where codigo = \u002755\u0027 limit 1),\n    now(),\n    now()\n  from input i\n  join active_response ar on true\n  where i.tipo = \u0027sku\u0027\n    and coalesce(ar.estado_respuesta, \u0027\u0027) = \u0027no_disponible\u0027\n  returning id, sku\n), upsert_confirm as (\n  insert into public.picker_sku_context (telefono, estado, sku, respuesta_id, created_at, updated_at)\n  select i.telefono, \u0027confirmar_respuesta\u0027, i.sku, ar.id, now(), now()\n  from input i\n  join active_response ar on true\n  where i.tipo = \u0027sku\u0027\n    and coalesce(ar.estado_respuesta, \u0027disponible\u0027) \u003c\u003e \u0027no_disponible\u0027\n  on conflict (telefono) do update set\n    estado = excluded.estado,\n    sku = excluded.sku,\n    respuesta_id = excluded.respuesta_id,\n    updated_at = now()\n), upsert_wait_area_from_sku as (\n  insert into public.picker_sku_context (telefono, estado, sku, respuesta_id, created_at, updated_at)\n  select i.telefono, \u0027esperando_area\u0027, i.sku, null, now(), now()\n  from input i\n  where i.tipo = \u0027sku\u0027\n    and not exists (select 1 from active_response)\n  on conflict (telefono) do update set\n    estado = excluded.estado,\n    sku = excluded.sku,\n    respuesta_id = null,\n    updated_at = now()\n), upsert_wait_area_from_no as (\n  insert into public.picker_sku_context (telefono, estado, sku, respuesta_id, created_at, updated_at)\n  select i.telefono, \u0027esperando_area\u0027, ctx.sku, null, now(), now()\n  from input i\n  join ctx on true\n  where i.tipo = \u0027no\u0027\n    and ctx.estado = \u0027confirmar_respuesta\u0027\n  on conflict (telefono) do update set\n    estado = excluded.estado,\n    sku = excluded.sku,\n    respuesta_id = null,\n    updated_at = now()\n), existing_pending as (\n  select c.id, c.sku, c.area\n  from public.consultas_sku c\n  join input i on c.telefono_picker = i.telefono\n  join ctx on upper(c.sku) = upper(ctx.sku)\n  where i.tipo = \u0027area\u0027\n    and ctx.estado = \u0027esperando_area\u0027\n    and c.estado = \u0027pendiente_sin_asignar\u0027\n  limit 1\n), insert_pending as (\n  insert into public.consultas_sku (sku, marca_producto, area, telefono_picker, mensaje_original, instancia, estado, local_id, created_at)\n  select\n    ctx.sku,\n    coalesce(nullif((select nombre_producto from product_info), \u0027\u0027), nullif((select marca_producto from product_info), \u0027\u0027)),\n    coalesce((select area from product_info), i.area),\n    i.telefono,\n    ctx.sku,\n    i.instancia,\n    \u0027pendiente_sin_asignar\u0027,\n    (select id from public.locales where codigo = \u002755\u0027 limit 1),\n    now()\n  from input i\n  join ctx on true\n  where i.tipo = \u0027area\u0027\n    and ctx.estado = \u0027esperando_area\u0027\n    and i.area is not null\n    and not exists (select 1 from existing_pending)\n  returning id, sku, area\n), pending_result as (\n  select id, sku, area from insert_pending\n  union all\n  select id, sku, area from existing_pending\n  limit 1\n), clear_after_yes as (\n  delete from public.picker_sku_context c\n  using input i, confirmed_response cr\n  where c.telefono = i.telefono\n    and i.tipo = \u0027yes\u0027\n), clear_after_area as (\n  delete from public.picker_sku_context c\n  using input i, pending_result p\n  where c.telefono = i.telefono\n    and i.tipo = \u0027area\u0027\n)\nselect\n  i.telefono,\n  i.instancia,\n  case\n    when i.tipo = \u0027ignore\u0027 then \u0027ignore\u0027\n    when i.telefono = \u0027\u0027 then \u0027ignore\u0027\n    when i.tipo = \u0027sku\u0027 and exists (select 1 from insert_no_disponible_log) then \u0027no_disponible_registered\u0027\n    when i.tipo = \u0027sku\u0027 and exists (select 1 from active_response where coalesce(estado_respuesta, \u0027disponible\u0027) \u003c\u003e \u0027no_disponible\u0027) then \u0027ask_confirm\u0027\n    when i.tipo = \u0027sku\u0027 then \u0027ask_area\u0027\n    when i.tipo = \u0027yes\u0027 and exists (select 1 from confirmed_response) then \u0027send_cached_response\u0027\n    when i.tipo = \u0027no\u0027 and exists (select 1 from ctx where estado = \u0027confirmar_respuesta\u0027) then \u0027ask_area\u0027\n    when i.tipo = \u0027area\u0027 and exists (select 1 from pending_result) then \u0027pending_created\u0027\n    else \u0027help\u0027\n  end as action,\n  case\n    when i.tipo = \u0027sku\u0027 and exists (select 1 from insert_no_disponible_log) then\n      \u0027SKU \u0027 || i.sku || \u0027: producto no disponible en este momento. Tu consulta quedó registrada.\u0027\n    when i.tipo = \u0027sku\u0027 and exists (select 1 from active_response where coalesce(estado_respuesta, \u0027disponible\u0027) \u003c\u003e \u0027no_disponible\u0027) then\n      \u0027Estas buscando SKU \u0027 || i.sku || \u0027 | Producto: \u0027 || coalesce(nullif((select nombre_producto from active_response), \u0027\u0027), \u0027Sin nombre registrado\u0027) || \u0027 | Marca: \u0027 || coalesce(nullif((select marca_producto from active_response), \u0027\u0027), \u0027Sin marca registrada\u0027) || \u0027? Responde SI o NO.\u0027\n    when i.tipo = \u0027sku\u0027 then\n      \u0027No existe respuesta para este SKU. A que area pertenece? Responde solo una opcion: Frio, Sala o GM.\u0027\n    when i.tipo = \u0027yes\u0027 and exists (select 1 from confirmed_response) then\n      \u0027SKU \u0027 || (select sku from confirmed_response) || \u0027 | Producto: \u0027 || coalesce(nullif((select nombre_producto from confirmed_response), \u0027\u0027), \u0027Sin nombre registrado\u0027) || \u0027 | Marca: \u0027 || coalesce(nullif((select marca_producto from confirmed_response), \u0027\u0027), \u0027Sin marca registrada\u0027) || coalesce(\u0027 | Area: \u0027 || nullif(initcap((select area from confirmed_response)), \u0027\u0027), \u0027\u0027) || \u0027. Respuesta: \u0027 || (select respuesta from confirmed_response)\n    when i.tipo = \u0027no\u0027 and exists (select 1 from ctx where estado = \u0027confirmar_respuesta\u0027) then\n      \u0027A que area pertenece el SKU? Responde solo una opcion: Frio, Sala o GM.\u0027\n    when i.tipo = \u0027area\u0027 and exists (select 1 from pending_result) then\n      \u0027Consulta enviada al equipo de \u0027 || initcap(coalesce((select area from pending_result), (select area from product_info), i.area)) || \u0027. Te responderemos por este mismo chat.\u0027\n    else\n      \u0027No fue posible crear la consulta. Envia solo el SKU, por ejemplo: 9999. Si el bot te pide area, responde Frio, Sala o GM.\u0027\n  end as texto_whatsapp\nfrom input i;",
-                                         "options":  {
-                                                         "queryReplacement":  "={{ [ $json.telefono, $json.tipo, $json.sku, $json.area, $json.mensaje_original, $json.instancia ] }}"
-                                                     }
-                                     },
-                      "id":  "resolver-conversacion",
-                      "name":  "Resolver conversacion SKU",
-                      "type":  "n8n-nodes-base.postgres",
-                      "typeVersion":  2.5,
-                      "position":  [
-                                       520,
-                                       280
-                                   ],
-                      "credentials":  {
-                                          "postgres":  {
-                                                           "id":  "",
-                                                           "name":  "Postgres Supabase/EasyPanel"
-                                                       }
-                                      }
-                  },
-                  {
-                      "parameters":  {
-                                         "conditions":  {
-                                                            "options":  {
-                                                                            "caseSensitive":  true,
-                                                                            "leftValue":  "",
-                                                                            "typeValidation":  "strict"
-                                                                        },
-                                                            "conditions":  [
-                                                                               {
-                                                                                   "id":  "should-reply",
-                                                                                   "leftValue":  "={{ $json.action !== \u0027ignore\u0027 }}",
-                                                                                   "rightValue":  true,
-                                                                                   "operator":  {
-                                                                                                    "type":  "boolean",
-                                                                                                    "operation":  "true",
-                                                                                                    "singleValue":  true
-                                                                                                }
-                                                                               }
-                                                                           ],
-                                                            "combinator":  "and"
-                                                        },
-                                         "options":  {
-
-                                                     }
-                                     },
-                      "id":  "if-responder",
-                      "name":  "IF responder picker",
-                      "type":  "n8n-nodes-base.if",
-                      "typeVersion":  2,
-                      "position":  [
-                                       780,
-                                       280
-                                   ]
-                  },
-                  {
-                      "parameters":  {
-                                         "method":  "POST",
-                                         "url":  "={{ $env.EVOLUTION_API_URL + \u0027/message/sendText/\u0027 + ($json.instancia || $env.EVOLUTION_INSTANCE) }}",
-                                         "sendHeaders":  true,
-                                         "headerParameters":  {
-                                                                  "parameters":  [
-                                                                                     {
-                                                                                         "name":  "apikey",
-                                                                                         "value":  "={{ $env.EVOLUTION_API_KEY }}"
-                                                                                     }
-                                                                                 ]
-                                                              },
-                                         "sendBody":  true,
-                                         "specifyBody":  "json",
-                                         "jsonBody":  "={{ { number: $json.telefono, text: $json.texto_whatsapp } }}",
-                                         "options":  {
-
-                                                     }
-                                     },
-                      "id":  "enviar-whatsapp",
-                      "name":  "Enviar WhatsApp",
-                      "type":  "n8n-nodes-base.httpRequest",
-                      "typeVersion":  4.2,
-                      "position":  [
-                                       1040,
-                                       180
-                                   ]
-                  },
-                  {
-                      "parameters":  {
-                                         "respondWith":  "json",
-                                         "responseBody":  "={{ { ok: true, action: $json.action } }}",
-                                         "options":  {
-
-                                                     }
-                                     },
-                      "id":  "responder-ok",
-                      "name":  "Responder webhook OK",
-                      "type":  "n8n-nodes-base.respondToWebhook",
-                      "typeVersion":  1.1,
-                      "position":  [
-                                       1300,
-                                       180
-                                   ]
-                  },
-                  {
-                      "parameters":  {
-                                         "respondWith":  "json",
-                                         "responseBody":  "={{ { ok: true, ignored: true } }}",
-                                         "options":  {
-
-                                                     }
-                                     },
-                      "id":  "responder-ignorado",
-                      "name":  "Responder webhook ignorado",
-                      "type":  "n8n-nodes-base.respondToWebhook",
-                      "typeVersion":  1.1,
-                      "position":  [
-                                       1040,
-                                       420
-                                   ]
-                  }
-              ],
-    "connections":  {
-                        "Webhook Evolution":  {
-                                                  "main":  [
-                                                               [
-                                                                   {
-                                                                       "node":  "Parsear mensaje",
-                                                                       "type":  "main",
-                                                                       "index":  0
-                                                                   }
-                                                               ]
-                                                           ]
-                                              },
-                        "Parsear mensaje":  {
-                                                "main":  [
-                                                             [
-                                                                 {
-                                                                     "node":  "Resolver conversacion SKU",
-                                                                     "type":  "main",
-                                                                     "index":  0
-                                                                 }
-                                                             ]
-                                                         ]
-                                            },
-                        "Resolver conversacion SKU":  {
-                                                          "main":  [
-                                                                       [
-                                                                           {
-                                                                               "node":  "IF responder picker",
-                                                                               "type":  "main",
-                                                                               "index":  0
-                                                                           }
-                                                                       ]
-                                                                   ]
-                                                      },
-                        "IF responder picker":  {
-                                                    "main":  [
-                                                                 [
-                                                                     {
-                                                                         "node":  "Enviar WhatsApp",
-                                                                         "type":  "main",
-                                                                         "index":  0
-                                                                     }
-                                                                 ],
-                                                                 [
-                                                                     {
-                                                                         "node":  "Responder webhook ignorado",
-                                                                         "type":  "main",
-                                                                         "index":  0
-                                                                     }
-                                                                 ]
-                                                             ]
-                                                },
-                        "Enviar WhatsApp":  {
-                                                "main":  [
-                                                             [
-                                                                 {
-                                                                     "node":  "Responder webhook OK",
-                                                                     "type":  "main",
-                                                                     "index":  0
-                                                                 }
-                                                             ]
-                                                         ]
-                                            }
-                    },
-    "settings":  {
-                     "executionOrder":  "v1"
-                 },
-    "pinData":  {
-
-                },
-    "versionId":  "bot-sku-inbound-sku-first",
-    "triggerCount":  0,
-    "tags":  [
-
-             ]
+  "name": "Bot SKU - Entrada WhatsApp",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-evolution",
+      "name": "Webhook Evolution",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body || $json;\nconst data = body.data || {};\nconst message = data.message || {};\nconst key = data.key || {};\n\nconst rawMessage = body.sku ?? body.message ?? body.text ?? message.conversation ?? message.extendedTextMessage?.text ?? message.imageMessage?.caption ?? '';\nconst mensaje = String(rawMessage || '').trim();\nconst normalized = mensaje.normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').trim();\nconst upper = normalized.toUpperCase();\nconst fromMe = key.fromMe === true || body.fromMe === true;\nconst looksLikeOtp = /CODIGO DE ACCESO RUNNER|EXPIRA EN/i.test(normalized);\n\nconst areaAliases = new Map([\n  ['FRIO', 'frio'],\n  ['SALA', 'sala'],\n  ['GM', 'gm'],\n]);\n\nlet tipo = 'invalid';\nlet sku = null;\nlet area = null;\n\nif (/^(SI|S|YES|Y)$/i.test(upper)) {\n  tipo = 'yes';\n} else if (/^(NO|N)$/i.test(upper)) {\n  tipo = 'no';\n} else if (areaAliases.has(upper)) {\n  tipo = 'area';\n  area = areaAliases.get(upper);\n} else if (/^[A-Z0-9_-]{2,32}$/.test(upper)) {\n  tipo = 'sku';\n  sku = upper;\n}\n\nif (fromMe || looksLikeOtp) {\n  tipo = 'ignore';\n}\n\nconst remoteJid = body.phone ?? body.telefono ?? key.remoteJid ?? data.remoteJid ?? '';\nconst telefono = String(remoteJid || '').replace('@s.whatsapp.net', '').replace('@c.us', '').trim();\nconst instancia = body.instance ?? body.instanceName ?? data.instance ?? '';\n\nreturn [{\n  json: {\n    tipo,\n    sku,\n    area,\n    telefono,\n    instancia,\n    mensaje_original: mensaje,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "parsear-mensaje",
+      "name": "Parsear mensaje",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with input as (\n  select\n    $1::text as telefono,\n    $2::text as tipo,\n    $3::text as sku,\n    $4::text as area,\n    $5::text as mensaje_original,\n    $6::text as instancia\n), cleanup as (\n  delete from public.picker_sku_context\n  where updated_at < now() - interval '30 minutes'\n), ctx as (\n  select c.*\n  from public.picker_sku_context c, input i\n  where c.telefono = i.telefono\n  limit 1\n), product_info as (\n  select sp.sku, sp.nombre_producto, sp.marca_producto, sp.area\n  from public.sku_productos sp\n  join input i on upper(sp.sku) = upper(coalesce(i.sku, (select sku from ctx)))\n  where sp.activo = true\n  limit 1\n), active_response as (\n  select\n    sr.id::text as id,\n    sr.sku,\n    coalesce(nullif(sp.nombre_producto, ''), nullif(sr.marca_producto, '')) as nombre_producto,\n    coalesce(nullif(sp.marca_producto, ''), nullif(sr.marca_producto, '')) as marca_producto,\n    coalesce(nullif(sp.area, ''), sr.area) as area,\n    sr.respuesta,\n    sr.estado_respuesta\n  from public.sku_respuestas sr\n  left join public.sku_productos sp on upper(sp.sku) = upper(sr.sku)\n  join input i on true\n  where i.tipo = 'sku'\n    and upper(sr.sku) = upper(i.sku)\n    and sr.activo = true\n    and (sr.respuesta_fija = true or sr.expires_at is null or sr.expires_at > now())\n  order by sr.created_at desc, sr.id desc\n  limit 1\n), confirmed_response as (\n  select\n    sr.id::text as id,\n    sr.sku,\n    coalesce(nullif(sp.nombre_producto, ''), nullif(sr.marca_producto, '')) as nombre_producto,\n    coalesce(nullif(sp.marca_producto, ''), nullif(sr.marca_producto, '')) as marca_producto,\n    coalesce(nullif(sp.area, ''), sr.area) as area,\n    sr.respuesta,\n    sr.estado_respuesta\n  from public.sku_respuestas sr\n  left join public.sku_productos sp on upper(sp.sku) = upper(sr.sku)\n  join ctx on ctx.respuesta_id = sr.id::text\n  join input i on true\n  where i.tipo = 'yes'\n    and ctx.estado = 'confirmar_respuesta'\n    and sr.activo = true\n    and (sr.respuesta_fija = true or sr.expires_at is null or sr.expires_at > now())\n  limit 1\n), insert_no_disponible_log as (\n  insert into public.consultas_sku (\n    sku,\n    marca_producto,\n    area,\n    telefono_picker,\n    mensaje_original,\n    instancia,\n    estado,\n    estado_respuesta,\n    respuesta_runner,\n    whatsapp_enviado,\n    respuesta_fija,\n    local_id,\n    created_at,\n    responded_at\n  )\n  select\n    ar.sku,\n    coalesce(nullif(ar.nombre_producto, ''), nullif(ar.marca_producto, '')),\n    ar.area,\n    i.telefono,\n    i.mensaje_original,\n    i.instancia,\n    'no_disponible',\n    'no_disponible',\n    ar.respuesta,\n    true,\n    true,\n    (select id from public.locales where codigo = '55' limit 1),\n    now(),\n    now()\n  from input i\n  join active_response ar on true\n  where i.tipo = 'sku'\n    and coalesce(ar.estado_respuesta, '') = 'no_disponible'\n  returning id, sku\n), upsert_confirm as (\n  insert into public.picker_sku_context (telefono, estado, sku, respuesta_id, created_at, updated_at)\n  select i.telefono, 'confirmar_respuesta', i.sku, ar.id, now(), now()\n  from input i\n  join active_response ar on true\n  where i.tipo = 'sku'\n    and coalesce(ar.estado_respuesta, 'disponible') <> 'no_disponible'\n  on conflict (telefono) do update set\n    estado = excluded.estado,\n    sku = excluded.sku,\n    respuesta_id = excluded.respuesta_id,\n    updated_at = now()\n), upsert_wait_area_from_sku as (\n  insert into public.picker_sku_context (telefono, estado, sku, respuesta_id, created_at, updated_at)\n  select i.telefono, 'esperando_area', i.sku, null, now(), now()\n  from input i\n  where i.tipo = 'sku'\n    and not exists (select 1 from active_response)\n  on conflict (telefono) do update set\n    estado = excluded.estado,\n    sku = excluded.sku,\n    respuesta_id = null,\n    updated_at = now()\n), upsert_wait_area_from_no as (\n  insert into public.picker_sku_context (telefono, estado, sku, respuesta_id, created_at, updated_at)\n  select i.telefono, 'esperando_area', ctx.sku, null, now(), now()\n  from input i\n  join ctx on true\n  where i.tipo = 'no'\n    and ctx.estado = 'confirmar_respuesta'\n  on conflict (telefono) do update set\n    estado = excluded.estado,\n    sku = excluded.sku,\n    respuesta_id = null,\n    updated_at = now()\n), existing_pending as (\n  select c.id, c.sku, c.area\n  from public.consultas_sku c\n  join input i on c.telefono_picker = i.telefono\n  join ctx on upper(c.sku) = upper(ctx.sku)\n  where i.tipo = 'area'\n    and ctx.estado = 'esperando_area'\n    and c.estado = 'pendiente_sin_asignar'\n  limit 1\n), insert_pending as (\n  insert into public.consultas_sku (sku, marca_producto, area, telefono_picker, mensaje_original, instancia, estado, local_id, created_at)\n  select\n    ctx.sku,\n    coalesce(nullif((select nombre_producto from product_info), ''), nullif((select marca_producto from product_info), '')),\n    coalesce((select area from product_info), i.area),\n    i.telefono,\n    ctx.sku,\n    i.instancia,\n    'pendiente_sin_asignar',\n    (select id from public.locales where codigo = '55' limit 1),\n    now()\n  from input i\n  join ctx on true\n  where i.tipo = 'area'\n    and ctx.estado = 'esperando_area'\n    and i.area is not null\n    and not exists (select 1 from existing_pending)\n  returning id, sku, area\n), pending_result as (\n  select id, sku, area from insert_pending\n  union all\n  select id, sku, area from existing_pending\n  limit 1\n), clear_after_yes as (\n  delete from public.picker_sku_context c\n  using input i, confirmed_response cr\n  where c.telefono = i.telefono\n    and i.tipo = 'yes'\n), clear_after_area as (\n  delete from public.picker_sku_context c\n  using input i, pending_result p\n  where c.telefono = i.telefono\n    and i.tipo = 'area'\n)\nselect\n  i.telefono,\n  i.instancia,\n  case\n    when i.tipo = 'ignore' then 'ignore'\n    when i.telefono = '' then 'ignore'\n    when i.tipo = 'sku' and exists (select 1 from insert_no_disponible_log) then 'no_disponible_registered'\n    when i.tipo = 'sku' and exists (select 1 from active_response where coalesce(estado_respuesta, 'disponible') <> 'no_disponible') then 'ask_confirm'\n    when i.tipo = 'sku' then 'ask_area'\n    when i.tipo = 'yes' and exists (select 1 from confirmed_response) then 'send_cached_response'\n    when i.tipo = 'no' and exists (select 1 from ctx where estado = 'confirmar_respuesta') then 'ask_area'\n    when i.tipo = 'area' and exists (select 1 from pending_result) then 'pending_created'\n    else 'help'\n  end as action,\n  case\n    when i.tipo = 'sku' and exists (select 1 from insert_no_disponible_log) then\n      'SKU ' || (select sku from active_response) ||\n      ' | Producto: ' || coalesce(nullif((select nombre_producto from active_response), ''), 'Sin nombre registrado') ||\n      ' | Marca: ' || coalesce(nullif((select marca_producto from active_response), ''), 'Sin marca registrada') ||\n      coalesce(' | Area: ' || nullif(initcap((select area from active_response)), ''), '') ||\n      E'\\nEstado: No disponible.\\nRespuesta: ' || coalesce(nullif((select respuesta from active_response), ''), 'Producto no disponible.')\n    when i.tipo = 'sku' and exists (select 1 from active_response where coalesce(estado_respuesta, 'disponible') <> 'no_disponible') then\n      'Estas buscando SKU ' || i.sku || ' | Producto: ' || coalesce(nullif((select nombre_producto from active_response), ''), 'Sin nombre registrado') || ' | Marca: ' || coalesce(nullif((select marca_producto from active_response), ''), 'Sin marca registrada') || '? Responde SI o NO.'\n    when i.tipo = 'sku' then\n      'No existe respuesta para este SKU. A que area pertenece? Responde solo una opcion: Frio, Sala o GM.'\n    when i.tipo = 'yes' and exists (select 1 from confirmed_response) then\n      'SKU ' || (select sku from confirmed_response) || ' | Producto: ' || coalesce(nullif((select nombre_producto from confirmed_response), ''), 'Sin nombre registrado') || ' | Marca: ' || coalesce(nullif((select marca_producto from confirmed_response), ''), 'Sin marca registrada') || coalesce(' | Area: ' || nullif(initcap((select area from confirmed_response)), ''), '') || '. Respuesta: ' || (select respuesta from confirmed_response)\n    when i.tipo = 'no' and exists (select 1 from ctx where estado = 'confirmar_respuesta') then\n      'A que area pertenece el SKU? Responde solo una opcion: Frio, Sala o GM.'\n    when i.tipo = 'area' and exists (select 1 from pending_result) then\n      'Consulta enviada al equipo de ' || initcap(coalesce((select area from pending_result), (select area from product_info), i.area)) || '. Te responderemos por este mismo chat.'\n    else\n      'No fue posible crear la consulta. Envia solo el SKU, por ejemplo: 9999. Si el bot te pide area, responde Frio, Sala o GM.'\n  end as texto_whatsapp\nfrom input i;",
+        "options": {
+          "queryReplacement": "={{ [ $json.telefono, $json.tipo, $json.sku, $json.area, $json.mensaje_original, $json.instancia ] }}"
+        }
+      },
+      "id": "resolver-conversacion",
+      "name": "Resolver conversacion SKU",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        520,
+        280
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Postgres Supabase/EasyPanel"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "should-reply",
+              "leftValue": "={{ $json.action !== 'ignore' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-responder",
+      "name": "IF responder picker",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        780,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_API_URL + '/message/sendText/' + ($json.instancia || $env.EVOLUTION_INSTANCE) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.EVOLUTION_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { number: $json.telefono, text: $json.texto_whatsapp } }}",
+        "options": {}
+      },
+      "id": "enviar-whatsapp",
+      "name": "Enviar WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1040,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, action: $json.action } }}",
+        "options": {}
+      },
+      "id": "responder-ok",
+      "name": "Responder webhook OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1300,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, ignored: true } }}",
+        "options": {}
+      },
+      "id": "responder-ignorado",
+      "name": "Responder webhook ignorado",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1040,
+        420
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Evolution": {
+      "main": [
+        [
+          {
+            "node": "Parsear mensaje",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parsear mensaje": {
+      "main": [
+        [
+          {
+            "node": "Resolver conversacion SKU",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolver conversacion SKU": {
+      "main": [
+        [
+          {
+            "node": "IF responder picker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF responder picker": {
+      "main": [
+        [
+          {
+            "node": "Enviar WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder webhook ignorado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "Responder webhook OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "bot-sku-inbound-sku-first",
+  "triggerCount": 0,
+  "tags": []
 }

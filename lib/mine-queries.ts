@@ -54,6 +54,7 @@ export function filterAntiguasPendingGroups(groups: QueryGroup[]) {
 
 export type MineRespondedConsulta = QueryGroupConsulta & {
   sku: string
+  nombreProducto: string
   marcaProducto: string
   area: string | null
   imagenUrl: string | null
@@ -71,6 +72,7 @@ export function listAntiguasRespondedConsultas(groups: QueryGroup[]) {
       items.push({
         ...consulta,
         sku: group.sku,
+        nombreProducto: group.nombreProducto,
         marcaProducto: group.marcaProducto,
         area: group.area,
         imagenUrl: group.imagenUrl,

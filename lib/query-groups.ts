@@ -11,6 +11,7 @@ export const QUERY_SORT_OPTIONS: { value: QuerySortMode; label: string }[] = [
 export type ConsultaRow = {
   id: string
   sku: string
+  nombre_producto?: string | null
   marca_producto?: string | null
   area: string | null
   telefono_picker?: string | null
@@ -31,6 +32,7 @@ export type QueryGroupConsulta = {
 
 export type QueryGroup = {
   sku: string
+  nombreProducto: string
   marcaProducto: string
   area: string | null
   imagenUrl: string | null
@@ -52,14 +54,15 @@ export function groupConsultasBySku(rows: ConsultaRow[]): QueryGroup[] {
   for (const row of rows) {
     const sku = String(row.sku || "").trim().toUpperCase()
     const area = normalizeArea(row.area)
+    const nombre = String(row.nombre_producto || "").trim()
     const marca = String(row.marca_producto || "").trim()
 
     if (!validSkuPattern.test(sku) || !area) {
       continue
     }
 
-    const groupKey = [sku, area, marca.toLowerCase()].join("|")
-    const normalizedRow = { ...row, sku, area, marca_producto: marca || null }
+    const groupKey = [sku, area].join("|")
+    const normalizedRow = { ...row, sku, area, nombre_producto: nombre || null, marca_producto: marca || null }
     const current = groups.get(groupKey) || []
     current.push(normalizedRow)
     groups.set(groupKey, current)
@@ -74,6 +77,7 @@ export function groupConsultasBySku(rows: ConsultaRow[]): QueryGroup[] {
 
     return {
       sku: first?.sku || "",
+      nombreProducto: first?.nombre_producto || "",
       marcaProducto: first?.marca_producto || "",
       area: first?.area || null,
       imagenUrl: first?.imagen_url || null,

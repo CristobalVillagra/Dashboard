@@ -395,8 +395,13 @@ export default function RunnerHome() {
 
       if (data.whatsappOk === false) {
         const firstError = data.dispatchResults?.find((result) => !result.ok)
+        const detail = firstError?.error
+          ? ` Detalle: ${firstError.error}`
+          : firstError?.status
+            ? ` HTTP ${firstError.status}.`
+            : ""
         setSuccessMessage(
-          `Respuesta guardada, pero no se pudo enviar WhatsApp al picker. Revisa n8n runner-response-dispatch${firstError?.status ? ` (HTTP ${firstError.status})` : ""}.`,
+          `Respuesta guardada, pero no se pudo enviar WhatsApp al picker. Revisa n8n runner-response-dispatch.${detail}`,
         )
       } else {
         setSuccessMessage(
@@ -682,12 +687,15 @@ export default function RunnerHome() {
               className="min-w-0 rounded-lg border border-[#d8e0ea] bg-white p-3 shadow-sm sm:p-4"
             >
               <div className="flex gap-3">
-                <ProductImage url={group.imagenUrl} alt={group.marcaProducto || group.sku} />
+                <ProductImage url={group.imagenUrl} alt={group.nombreProducto || group.marcaProducto || group.sku} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="text-xs font-semibold uppercase tracking-wide text-[#6b7c8f]">SKU</p>
                       <h3 className="mt-1 break-all text-lg font-bold leading-snug sm:text-xl">{group.sku}</h3>
+                      {group.nombreProducto && (
+                        <p className="mt-1 text-sm font-semibold text-[#142033]">{group.nombreProducto}</p>
+                      )}
                       {group.marcaProducto && (
                         <p className="mt-1 text-sm font-medium text-[#476179]">{group.marcaProducto}</p>
                       )}
@@ -755,12 +763,15 @@ export default function RunnerHome() {
                 className="min-w-0 rounded-lg border border-[#d8e0ea] bg-white p-3 shadow-sm sm:p-4"
               >
                 <div className="flex gap-3">
-                  <ProductImage url={consulta.imagenUrl} alt={consulta.marcaProducto || consulta.sku} />
+                  <ProductImage url={consulta.imagenUrl} alt={consulta.nombreProducto || consulta.marcaProducto || consulta.sku} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <p className="text-xs font-semibold uppercase tracking-wide text-[#6b7c8f]">SKU</p>
                         <h3 className="mt-1 break-all text-lg font-bold leading-snug sm:text-xl">{consulta.sku}</h3>
+                        {consulta.nombreProducto && (
+                          <p className="mt-1 text-sm font-semibold text-[#142033]">{consulta.nombreProducto}</p>
+                        )}
                         {consulta.marcaProducto && (
                           <p className="mt-1 text-sm font-medium text-[#476179]">{consulta.marcaProducto}</p>
                         )}
@@ -802,12 +813,15 @@ export default function RunnerHome() {
                 className="min-w-0 rounded-lg border border-[#d8e0ea] bg-white p-3 shadow-sm sm:p-4"
               >
                 <div className="flex gap-3">
-                  <ProductImage url={group.imagenUrl} alt={group.marcaProducto || group.sku} />
+                  <ProductImage url={group.imagenUrl} alt={group.nombreProducto || group.marcaProducto || group.sku} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <p className="text-xs font-semibold uppercase tracking-wide text-[#6b7c8f]">SKU</p>
                         <h3 className="mt-1 break-all text-lg font-bold leading-snug sm:text-xl">{group.sku}</h3>
+                        {group.nombreProducto && (
+                          <p className="mt-1 text-sm font-semibold text-[#142033]">{group.nombreProducto}</p>
+                        )}
                         {group.marcaProducto && (
                           <p className="mt-1 text-sm font-medium text-[#476179]">{group.marcaProducto}</p>
                         )}
@@ -904,11 +918,16 @@ export default function RunnerHome() {
           {selected && (
             <div className="space-y-4">
               <div className="flex gap-3 rounded-md border border-[#d8e0ea] bg-[#f7f9fc] p-3">
-                <ProductImage url={selected.imagenUrl} alt={selected.marcaProducto || selected.sku} size="sm" />
+                <ProductImage
+                  url={selected.imagenUrl}
+                  alt={selected.nombreProducto || selected.marcaProducto || selected.sku}
+                  size="sm"
+                />
                 <div>
                   <p className="text-sm font-semibold">{selected.total} consulta(s) asignadas</p>
                   <p className="mt-1 text-sm text-[#476179]">
-                    {selected.marcaProducto || "Producto no registrado"} - {formatArea(selected.area)}
+                    {selected.nombreProducto || "Producto no registrado"}
+                    {selected.marcaProducto ? ` - ${selected.marcaProducto}` : ""} - {formatArea(selected.area)}
                   </p>
                   <p className="mt-2 text-sm leading-6 text-[#5c6f82]">
                     {selected.sampleMessage || "Sin mensaje original."}

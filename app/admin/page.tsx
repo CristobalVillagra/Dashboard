@@ -62,6 +62,8 @@ type Product = {
   runners_reportando?: number
   reporte_stale?: boolean
   reporte_multiples_runners?: boolean
+  no_registrado?: boolean
+  consultas_abiertas?: number
 }
 
 type FixedResponse = FixedResponseRecord
@@ -106,16 +108,23 @@ export default function AdminPage() {
   })
   const [newProductImage, setNewProductImage] = useState<File | null>(null)
   const [productSearch, setProductSearch] = useState("")
+  const [productView, setProductView] = useState<"catalogo" | "no_registrados">("catalogo")
 
   const filteredProducts = useMemo(() => {
     const query = productSearch.trim().toLowerCase()
-    if (!query) return products
-    return products.filter(
+    const scopedProducts =
+      productView === "no_registrados"
+        ? products.filter((product) => product.no_registrado)
+        : products.filter((product) => !product.no_registrado)
+
+    if (!query) return scopedProducts
+    return scopedProducts.filter(
       (product) =>
         product.sku.toLowerCase().includes(query) ||
-        (product.nombre_producto || "").toLowerCase().includes(query),
+        (product.nombre_producto || "").toLowerCase().includes(query) ||
+        (product.marca_producto || "").toLowerCase().includes(query),
     )
-  }, [products, productSearch])
+  }, [products, productSearch, productView])
 
   const visibleQueryGroups = useMemo(() => {
     const rows = adminQueries.map((query) => ({
@@ -356,7 +365,7 @@ export default function AdminPage() {
     if (image) formData.append("imagen", image)
 
     await fetchForm("/api/admin/products", {
-      method: "PATCH",
+      method: product.no_registrado ? "POST" : "PATCH",
       body: formData,
     })
     setSuccess(`Producto ${newSku && newSku !== product.sku ? newSku : product.sku} actualizado.`)
@@ -653,23 +662,33 @@ export default function AdminPage() {
             </div>
             <div className="rounded-lg border border-[#d8e0ea] bg-white p-4">
               <h3 className="font-semibold">Catalogo de productos</h3>
+              <div className="mt-3 grid grid-cols-2 rounded-md border border-[#cfd9e5] bg-[#f7f9fc] p-1 text-sm">
+                <TabButton active={productView === "catalogo"} onClick={() => setProductView("catalogo")}>
+                  Registrados
+                </TabButton>
+                <TabButton active={productView === "no_registrados"} onClick={() => setProductView("no_registrados")}>
+                  No registrados ({products.filter((product) => product.no_registrado).length})
+                </TabButton>
+              </div>
               <div className="relative mt-3">
                 <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#8aa0b5]" />
                 <Input
                   className="pl-9"
-                  placeholder="Buscar por SKU o nombre..."
+                  placeholder="Buscar por SKU, nombre o marca..."
                   value={productSearch}
                   onChange={(e) => setProductSearch(e.target.value)}
                 />
               </div>
               {productSearch.trim() && (
                 <p className="mt-2 text-sm text-[#5c6f82]">
-                  {filteredProducts.length} de {products.length} productos
+                  {filteredProducts.length} resultado(s)
                 </p>
               )}
             </div>
             {filteredProducts.length === 0 && productSearch.trim() ? (
               <Empty text="Ningun producto coincide con la busqueda." />
+            ) : filteredProducts.length === 0 && productView === "no_registrados" ? (
+              <Empty text="No hay SKU no registrados con consultas abiertas." />
             ) : (
               filteredProducts.map((product) => (
                 <ProductEditor key={product.sku} product={product} onSave={updateProduct} />
@@ -794,8 +813,18 @@ function ProductEditor({
               <input type="checkbox" checked={activo} onChange={(e) => setActivo(e.target.checked)} />
               Activo
             </label>
+            {product.no_registrado && (
+              <span className="w-fit rounded-md bg-[#fff8e7] px-2 py-1 text-xs font-semibold text-[#745015]">
+                SKU no registrado
+              </span>
+            )}
           </div>
           <div className="mt-2 flex flex-wrap gap-2 text-xs text-[#476179]">
+            {product.no_registrado && (
+              <span className="rounded-md bg-[#fff8e7] px-2 py-1 font-semibold text-[#745015]">
+                {product.consultas_abiertas || 1} consulta(s) abierta(s)
+              </span>
+            )}
             <span className="rounded-md bg-[#f0f4f8] px-2 py-1">
               Reportes no disponible: {product.reportes_no_disponible || 0}
             </span>
@@ -871,7 +900,7 @@ function ProductEditor({
               setSaving(false)
             }}
           >
-            Guardar producto
+            {product.no_registrado ? "Registrar producto" : "Guardar producto"}
           </Button>
         </div>
       </div>
