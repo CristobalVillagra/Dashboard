@@ -4,6 +4,19 @@ import { useState, type ReactNode } from "react"
 import { ImagePlus } from "lucide-react"
 import type { FixedResponseRecord } from "@/lib/fixed-responses"
 import { formatAreaLabel } from "@/lib/areas"
+import { ImageZoomModal } from "@/components/image-zoom-modal"
+
+function formatRelativeDate(iso: string | null | undefined): string {
+  if (!iso) return ""
+  const d = new Date(iso)
+  return d.toLocaleString("es-CL", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  })
+}
 
 export function FixedResponseCard({
   response,
@@ -24,16 +37,24 @@ export function FixedResponseCard({
                 <p className="mt-1 text-sm font-medium text-[#476179]">{response.marca_producto}</p>
               )}
             </div>
-            {response.respuesta_fija && (
-              <span className="shrink-0 rounded-md bg-[#e7f5ee] px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-[#1f6a4f]">
-                Respuesta fija
-              </span>
-            )}
+            <span className="shrink-0 rounded-md bg-[#fff1f0] px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-[#9b2c2c]">
+              Sin stock – fijado por runner
+            </span>
           </div>
+
+          <p className="mt-1.5 text-xs text-[#5c6f82]">
+            Cualquier picker que consulte este SKU recibe respuesta automática de no disponible.
+          </p>
+
           <div className="mt-2 flex flex-wrap gap-2 text-xs text-[#476179]">
             <span className="rounded-md bg-[#f0f4f8] px-2 py-1">{formatAreaLabel(response.area)}</span>
             {response.nombre_runner && (
               <span className="rounded-md bg-[#f0f4f8] px-2 py-1">Runner: {response.nombre_runner}</span>
+            )}
+            {response.ultima_respuesta_en && (
+              <span className="rounded-md bg-[#f0f4f8] px-2 py-1">
+                Fijado: {formatRelativeDate(response.ultima_respuesta_en)}
+              </span>
             )}
             {typeof response.reportes_no_disponible === "number" && response.reportes_no_disponible > 0 && (
               <span className="rounded-md bg-[#fff8e7] px-2 py-1 font-semibold text-[#745015]">
@@ -69,6 +90,7 @@ export function FixedResponseCard({
 
 function FixedResponseImage({ url, alt }: { url: string | null; alt: string }) {
   const [failed, setFailed] = useState(false)
+  const [zoomOpen, setZoomOpen] = useState(false)
 
   if (!url || failed) {
     return (
@@ -82,12 +104,23 @@ function FixedResponseImage({ url, alt }: { url: string | null; alt: string }) {
   }
 
   return (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
-      src={url}
-      alt={alt}
-      className="size-20 shrink-0 rounded-md border border-[#d8e0ea] bg-[#f7f9fc] object-cover"
-      onError={() => setFailed(true)}
-    />
+    <>
+      <button
+        type="button"
+        className="size-20 shrink-0 overflow-hidden rounded-md border border-[#d8e0ea] bg-[#f7f9fc] transition active:scale-95"
+        onClick={() => setZoomOpen(true)}
+        aria-label={`Ver imagen de ${alt}`}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={url}
+          alt={alt}
+          className="size-full object-cover"
+          onError={() => setFailed(true)}
+        />
+      </button>
+
+      <ImageZoomModal open={zoomOpen} src={url} alt={alt} onClose={() => setZoomOpen(false)} />
+    </>
   )
 }

@@ -1,18 +1,12 @@
 import { NextResponse } from "next/server"
 import { getSupabaseAdmin } from "@/lib/supabase-admin"
 import { requireActiveRunner } from "@/lib/runner-auth"
-import { dispatchRunnerResponse } from "@/lib/n8n-dispatch"
+import { dispatchRunnerResponse, dispatchAppRunnerResponse } from "@/lib/n8n-dispatch"
 import { normalizeArea } from "@/lib/areas"
 
 const validSkuPattern = /^[A-Z0-9_-]{2,32}$/
 
 type EstadoRespuesta = "disponible" | "no_disponible" | "ir_a_revisar"
-
-function mapEstadoConsulta(estadoRespuesta: EstadoRespuesta) {
-  if (estadoRespuesta === "no_disponible") return "no_disponible"
-  if (estadoRespuesta === "ir_a_revisar") return "en_revision"
-  return "respondido"
-}
 
 export async function POST(request: Request) {
   const { runner, reason } = await requireActiveRunner()
@@ -47,7 +41,7 @@ export async function POST(request: Request) {
 
     const { data: assignedRows, error: selectError } = await supabase
       .from("consultas_sku")
-      .select("id,sku,marca_producto,area,estado,telefono_runner,local_id")
+      .select("id,sku,marca_producto,area,estado,telefono_runner,local_id,canal")
       .in("id", ids)
       .eq("telefono_runner", runner.telefono)
       .in("estado", ["tomada", "en_revision"])
@@ -67,12 +61,18 @@ export async function POST(request: Request) {
       cleanEstado === "no_disponible"
         ? cleanAnswer || "Producto no disponible."
         : cleanEstado === "ir_a_revisar"
-          ? cleanAnswer || "Estamos revisando el producto. Te avisaremos por este mismo chat cuando el runner confirme disponibilidad."
+          ? cleanAnswer || "Estamos revisando el producto. Te notificaremos cuando el runner confirme disponibilidad."
           : cleanAnswer
     const responseArea = normalizeArea(firstAssigned?.area) || null
     const responseBrand = String(firstAssigned?.marca_producto || "").trim() || null
-    const consultaEstado = mapEstadoConsulta(cleanEstado)
 
+    // Determinar si alguna consulta es canal 'app'
+    const appIds = (assignedRows || [])
+      .filter((row) => assignedIds.includes(row.id) && row.canal === "app")
+      .map((row) => row.id)
+    const waIds = assignedIds.filter((id) => !appIds.includes(id))
+
+    // Actualizar sku_productos
     try {
       if (cleanEstado === "no_disponible") {
         const { data: product } = await supabase
@@ -108,16 +108,14 @@ export async function POST(request: Request) {
       } else if (cleanEstado === "disponible") {
         await supabase
           .from("sku_productos")
-          .update({
-            ultimo_estado_reportado: "disponible",
-            updated_at: now,
-          })
+          .update({ ultimo_estado_reportado: "disponible", updated_at: now })
           .eq("sku", cleanSku)
       }
     } catch (productReportError) {
       console.warn("No se pudo actualizar reporte de producto", cleanSku, productReportError)
     }
 
+    // Upsert en sku_respuestas
     if (cleanEstado !== "ir_a_revisar") {
       const { error: answerError } = await supabase.from("sku_respuestas").upsert(
         {
@@ -128,7 +126,7 @@ export async function POST(request: Request) {
           activo: true,
           respuesta_fija: isFixed,
           estado_respuesta: cleanEstado === "no_disponible" ? "no_disponible" : "disponible",
-          expires_at: isFixed ? null : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+          expires_at: isFixed ? null : new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
           telefono_runner: runner.telefono,
           nombre_runner: runner.nombre,
           ultima_respuesta_en: now,
@@ -136,33 +134,56 @@ export async function POST(request: Request) {
         },
         { onConflict: "sku" },
       )
-
       if (answerError) throw answerError
     }
 
-    const updates: Record<string, string | boolean | null> = {
-      respuesta_runner: responseText,
-      estado: consultaEstado,
-      estado_respuesta: cleanEstado,
-      respuesta_fija: isFixed,
-      responded_at: cleanEstado === "ir_a_revisar" ? null : now,
-      whatsapp_enviado: false,
-      telefono_runner: runner.telefono,
-      nombre_runner: runner.nombre,
+    // Consultas canal 'app': usar la funcion RPC que actualiza + crea mensajes + notificaciones
+    let appResults: Array<{ consultaId: string; ok: boolean }> = []
+    if (appIds.length > 0) {
+      const { error: rpcError } = await supabase.rpc("register_runner_answer_for_app", {
+        p_consulta_ids:    appIds,
+        p_sku:             cleanSku,
+        p_telefono_runner: runner.telefono,
+        p_nombre_runner:   runner.nombre,
+        p_respuesta:       responseText,
+        p_estado_respuesta: cleanEstado,
+        p_respuesta_fija:  isFixed,
+        p_canal:           "app",
+      })
+
+      if (rpcError) throw rpcError
+
+      appResults = await Promise.all(
+        appIds.map(async (consultaId) => {
+          const r = await dispatchAppRunnerResponse(consultaId)
+          return { consultaId: String(consultaId), ...r }
+        }),
+      )
     }
 
-    const { error: updateError } = await supabase
-      .from("consultas_sku")
-      .update(updates)
-      .in("id", assignedIds)
+    // Consultas canal 'whatsapp': actualizar directamente + dispatch WhatsApp
+    let waResults: Array<{ consultaId: string; ok: boolean }> = []
+    if (waIds.length > 0) {
+      const { error: rpcError } = await supabase.rpc("register_runner_answer_for_app", {
+        p_consulta_ids:    waIds,
+        p_sku:             cleanSku,
+        p_telefono_runner: runner.telefono,
+        p_nombre_runner:   runner.nombre,
+        p_respuesta:       responseText,
+        p_estado_respuesta: cleanEstado,
+        p_respuesta_fija:  isFixed,
+        p_canal:           "whatsapp",
+      })
 
-    if (updateError) throw updateError
+      if (rpcError) throw rpcError
 
-    const dispatchResults = []
-    for (const consultaId of assignedIds) {
       const localId = firstAssigned?.local_id || runner.localId || null
-      const result = await dispatchRunnerResponse(consultaId, localId)
-      dispatchResults.push({ consultaId, ...result })
+      waResults = await Promise.all(
+        waIds.map(async (consultaId) => {
+          const r = await dispatchRunnerResponse(consultaId, localId)
+          return { consultaId: String(consultaId), ...r }
+        }),
+      )
     }
 
     return NextResponse.json({
@@ -170,8 +191,8 @@ export async function POST(request: Request) {
       sku: cleanSku,
       estadoRespuesta: cleanEstado,
       updatedConsultas: assignedIds.length,
-      whatsappOk: dispatchResults.every((result) => result.ok),
-      dispatchResults,
+      appNotified: appResults.every((r) => r.ok),
+      whatsappOk: waResults.every((r) => r.ok),
     })
   } catch (error) {
     console.error(error)

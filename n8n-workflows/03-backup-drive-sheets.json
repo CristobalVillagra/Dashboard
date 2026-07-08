@@ -1,0 +1,461 @@
+{
+  "name": "03 – Respaldo Picker → Drive + Sheets",
+  "nodes": [
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000001",
+      "name": "Webhook Respaldo",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "app-respaldo-pedido",
+      "parameters": {
+        "path": "app-respaldo-pedido",
+        "method": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000002",
+      "name": "Validar Secret",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [460, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true },
+          "conditions": [
+            {
+              "id": "cond-secret",
+              "leftValue": "={{ $json.headers['x-webhook-secret'] }}",
+              "rightValue": "={{ $env.N8N_WEBHOOK_SECRET }}",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000003",
+      "name": "Rechazar (401)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [680, 480],
+      "parameters": {
+        "respondWith": "json",
+        "responseCode": 401,
+        "responseBody": "={ \"error\": \"Unauthorized\" }"
+      }
+    },
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000004",
+      "name": "Extraer respaldo_id",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [680, 300],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f1",
+              "name": "respaldo_id",
+              "value": "={{ $json.body.respaldo_id }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000005",
+      "name": "Obtener Respaldo Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/respaldos_pedido",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "id", "value": "=eq.{{ $json.respaldo_id }}" },
+            { "name": "select", "value": "id,telefono_picker,nombre_picker,identificador,tipo_servicio,foto_urls,estado,created_at,local_id" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000006",
+      "name": "Tiene fotos?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1080, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true },
+          "conditions": [
+            {
+              "id": "cond-fotos",
+              "leftValue": "={{ $json[0].foto_urls?.length ?? 0 }}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000007",
+      "name": "Descargar Primera Foto",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1280, 200],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json[0].foto_urls[0] }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "foto_data"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000008",
+      "name": "Preparar Metadata Drive",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1480, 200],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f1",
+              "name": "nombre_archivo",
+              "value": "=RESPALDO_{{ $('Obtener Respaldo Supabase').item.json[0].identificador }}_{{ $('Obtener Respaldo Supabase').item.json[0].tipo_servicio }}_{{ DateTime.now().toFormat('yyyyMMdd_HHmmss') }}.jpg",
+              "type": "string"
+            },
+            {
+              "id": "f2",
+              "name": "respaldo",
+              "value": "={{ $('Obtener Respaldo Supabase').item.json[0] }}",
+              "type": "object"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000009",
+      "name": "Subir a Google Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1680, 200],
+      "parameters": {
+        "operation": "upload",
+        "name": "={{ $json.nombre_archivo }}",
+        "driveId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_DRIVE_FOLDER_PARENT_ID }}",
+          "mode": "id"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_DRIVE_FOLDER_PARENT_ID }}",
+          "mode": "id"
+        },
+        "inputDataFieldName": "foto_data",
+        "options": {
+          "simplifyOutput": true
+        }
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "google-drive-oauth",
+          "name": "Google Drive OAuth"
+        }
+      }
+    },
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000010",
+      "name": "Armar Fila Sheets",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1880, 200],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "s1",
+              "name": "fecha",
+              "value": "={{ DateTime.fromISO($('Obtener Respaldo Supabase').item.json[0].created_at).toFormat('dd/MM/yyyy HH:mm') }}",
+              "type": "string"
+            },
+            {
+              "id": "s2",
+              "name": "picker",
+              "value": "={{ $('Obtener Respaldo Supabase').item.json[0].nombre_picker ?? $('Obtener Respaldo Supabase').item.json[0].telefono_picker }}",
+              "type": "string"
+            },
+            {
+              "id": "s3",
+              "name": "identificador",
+              "value": "={{ $('Obtener Respaldo Supabase').item.json[0].identificador }}",
+              "type": "string"
+            },
+            {
+              "id": "s4",
+              "name": "tipo_servicio",
+              "value": "={{ $('Obtener Respaldo Supabase').item.json[0].tipo_servicio }}",
+              "type": "string"
+            },
+            {
+              "id": "s5",
+              "name": "drive_url",
+              "value": "={{ 'https://drive.google.com/file/d/' + $json.id + '/view' }}",
+              "type": "string"
+            },
+            {
+              "id": "s6",
+              "name": "foto_original",
+              "value": "={{ $('Obtener Respaldo Supabase').item.json[0].foto_urls[0] }}",
+              "type": "string"
+            },
+            {
+              "id": "s7",
+              "name": "drive_file_id",
+              "value": "={{ $json.id }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000011",
+      "name": "Registrar en Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2080, 200],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_RESPALDOS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Respaldos",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Fecha": "={{ $json.fecha }}",
+            "Picker": "={{ $json.picker }}",
+            "Identificador": "={{ $json.identificador }}",
+            "Tipo Servicio": "={{ $json.tipo_servicio }}",
+            "Drive URL": "={{ $json.drive_url }}",
+            "Foto Original": "={{ $json.foto_original }}"
+          }
+        },
+        "options": {
+          "valueInputMode": "USER_ENTERED"
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-oauth",
+          "name": "Google Sheets OAuth"
+        }
+      }
+    },
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000012",
+      "name": "Actualizar Drive URL en Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2280, 200],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/respaldos_pedido",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "id", "value": "=eq.{{ $('Extraer respaldo_id').item.json.respaldo_id }}" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ drive_url: 'https://drive.google.com/file/d/' + $('Armar Fila Sheets').item.json.drive_file_id + '/view', estado: 'pendiente' }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000013",
+      "name": "Responder OK con Drive",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2480, 200],
+      "parameters": {
+        "respondWith": "json",
+        "responseCode": 200,
+        "responseBody": "={{ JSON.stringify({ ok: true, drive_url: 'https://drive.google.com/file/d/' + $('Armar Fila Sheets').item.json.drive_file_id + '/view', sheet: 'registrado' }) }}"
+      }
+    },
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000014",
+      "name": "Solo Registrar en Sheets (sin foto)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1280, 440],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_RESPALDOS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Respaldos",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Fecha": "={{ DateTime.fromISO($json[0].created_at).toFormat('dd/MM/yyyy HH:mm') }}",
+            "Picker": "={{ $json[0].nombre_picker ?? $json[0].telefono_picker }}",
+            "Identificador": "={{ $json[0].identificador }}",
+            "Tipo Servicio": "={{ $json[0].tipo_servicio }}",
+            "Drive URL": "sin foto",
+            "Foto Original": ""
+          }
+        },
+        "options": {
+          "valueInputMode": "USER_ENTERED"
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-oauth",
+          "name": "Google Sheets OAuth"
+        }
+      }
+    },
+    {
+      "id": "c3d4e5f6-0003-0003-0003-000000000015",
+      "name": "Responder OK sin foto",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1480, 440],
+      "parameters": {
+        "respondWith": "json",
+        "responseCode": 200,
+        "responseBody": "={ \"ok\": true, \"drive_url\": null, \"sheet\": \"registrado sin foto\" }"
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Respaldo": {
+      "main": [
+        [{ "node": "Validar Secret", "type": "main", "index": 0 }]
+      ]
+    },
+    "Validar Secret": {
+      "main": [
+        [{ "node": "Extraer respaldo_id", "type": "main", "index": 0 }],
+        [{ "node": "Rechazar (401)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Extraer respaldo_id": {
+      "main": [
+        [{ "node": "Obtener Respaldo Supabase", "type": "main", "index": 0 }]
+      ]
+    },
+    "Obtener Respaldo Supabase": {
+      "main": [
+        [{ "node": "Tiene fotos?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Tiene fotos?": {
+      "main": [
+        [{ "node": "Descargar Primera Foto", "type": "main", "index": 0 }],
+        [{ "node": "Solo Registrar en Sheets (sin foto)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Descargar Primera Foto": {
+      "main": [
+        [{ "node": "Preparar Metadata Drive", "type": "main", "index": 0 }]
+      ]
+    },
+    "Preparar Metadata Drive": {
+      "main": [
+        [{ "node": "Subir a Google Drive", "type": "main", "index": 0 }]
+      ]
+    },
+    "Subir a Google Drive": {
+      "main": [
+        [{ "node": "Armar Fila Sheets", "type": "main", "index": 0 }]
+      ]
+    },
+    "Armar Fila Sheets": {
+      "main": [
+        [{ "node": "Registrar en Google Sheets", "type": "main", "index": 0 }]
+      ]
+    },
+    "Registrar en Google Sheets": {
+      "main": [
+        [{ "node": "Actualizar Drive URL en Supabase", "type": "main", "index": 0 }]
+      ]
+    },
+    "Actualizar Drive URL en Supabase": {
+      "main": [
+        [{ "node": "Responder OK con Drive", "type": "main", "index": 0 }]
+      ]
+    },
+    "Solo Registrar en Sheets (sin foto)": {
+      "main": [
+        [{ "node": "Responder OK sin foto", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": ["dashboard", "picker", "backup", "drive", "sheets"],
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "dashboard-picker-v1"
+  }
+}

@@ -43,7 +43,8 @@ export async function POST(request: Request) {
     const { telefono, nombre, rol, area, estadoUsuario } = await request.json()
     const cleanPhone = String(telefono || "").replace(/[^\d+]/g, "").trim()
     const cleanName = String(nombre || "").trim()
-    const cleanRole = rol === "admin" ? "admin" : "runner"
+    const cleanRole: "runner" | "admin" | "picker" =
+      rol === "admin" ? "admin" : rol === "picker" ? "picker" : "runner"
     const cleanArea = cleanRole === "runner" ? normalizeArea(area) : null
     const cleanState = estadoUsuario === "pendiente_aprobacion" ? "pendiente_aprobacion" : "activo"
 
@@ -108,16 +109,25 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Solicitud invalida." }, { status: 400 })
     }
 
-    if (action === "aprobar" && !cleanArea) {
-      return NextResponse.json({ error: "Debes asignar un area al aprobar." }, { status: 400 })
-    }
-
     const supabase = getSupabaseAdmin()
     const updates: Record<string, string | boolean | null> = {}
 
     if (action === "aprobar") {
+      // Verificar si es picker (no requiere area)
+      const { data: targetUser } = await supabase
+        .from("usuarios")
+        .select("rol")
+        .eq("telefono", cleanPhone)
+        .maybeSingle()
+
+      const isPicker = targetUser?.rol === "picker"
+
+      if (!isPicker && !cleanArea) {
+        return NextResponse.json({ error: "Debes asignar un area al aprobar un runner." }, { status: 400 })
+      }
+
       updates.estado_usuario = "activo"
-      updates.area = cleanArea
+      updates.area = isPicker ? null : cleanArea
       updates.activo = false
     } else if (action === "rechazar") {
       updates.estado_usuario = "rechazado"
@@ -129,7 +139,8 @@ export async function PATCH(request: Request) {
       updates.estado_usuario = "inactivo"
       updates.activo = false
     } else if (action === "editar") {
-      const cleanRole = rol === "admin" ? "admin" : "runner"
+      const cleanRole: "runner" | "admin" | "picker" =
+        rol === "admin" ? "admin" : rol === "picker" ? "picker" : "runner"
       const cleanState = ["pendiente_aprobacion", "activo", "inactivo", "rechazado"].includes(estadoUsuario)
         ? estadoUsuario
         : null
@@ -141,6 +152,7 @@ export async function PATCH(request: Request) {
       if (cleanRole === "runner" && !cleanArea) {
         return NextResponse.json({ error: "Debes asignar area al runner." }, { status: 400 })
       }
+      // Los pickers no requieren area
 
       updates.rol = cleanRole
       updates.area = cleanRole === "runner" ? cleanArea : null

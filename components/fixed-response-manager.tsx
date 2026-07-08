@@ -28,8 +28,19 @@ export function FixedResponseManager({
   const [text, setText] = useState(response.respuesta)
   const [saving, setSaving] = useState(false)
   const [toggling, setToggling] = useState(false)
+  const [confirmDeactivate, setConfirmDeactivate] = useState(false)
 
   if (!canEdit) return null
+
+  async function handleDeactivate() {
+    setConfirmDeactivate(false)
+    setToggling(true)
+    try {
+      await onUpdate({ id: response.id, activo: false })
+    } finally {
+      setToggling(false)
+    }
+  }
 
   return (
     <>
@@ -44,24 +55,68 @@ export function FixedResponseManager({
         >
           Editar respuesta
         </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={toggling}
-          onClick={async () => {
-            setToggling(true)
-            try {
-              await onUpdate({ id: response.id, activo: !response.activo })
-            } finally {
-              setToggling(false)
-            }
-          }}
-        >
-          {toggling && <RefreshCw className="size-4 animate-spin" />}
-          {response.activo ? "Desactivar" : "Activar"}
-        </Button>
+
+        {response.activo ? (
+          <Button
+            size="sm"
+            className="border-[#1f7a5b] bg-[#e7f5ee] text-[#1f6a4f] hover:bg-[#d0ede0]"
+            variant="outline"
+            disabled={toggling}
+            onClick={() => setConfirmDeactivate(true)}
+          >
+            {toggling && <RefreshCw className="size-4 animate-spin" />}
+            Confirmar llegada a bodega
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={toggling}
+            onClick={async () => {
+              setToggling(true)
+              try {
+                await onUpdate({ id: response.id, activo: true })
+              } finally {
+                setToggling(false)
+              }
+            }}
+          >
+            {toggling && <RefreshCw className="size-4 animate-spin" />}
+            Activar
+          </Button>
+        )}
       </div>
 
+      {/* Confirm deactivate dialog */}
+      <Dialog open={confirmDeactivate} onOpenChange={setConfirmDeactivate}>
+        <DialogContent className="bg-white text-[#142033] sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Confirmar llegada a bodega</DialogTitle>
+            <DialogDescription>
+              ¿Confirmar que <strong>SKU {response.sku}</strong> ya llegó a bodega? Esto
+              desactivará la respuesta automática de &quot;sin stock&quot; para este producto.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setConfirmDeactivate(false)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              className="bg-[#1f7a5b] text-white hover:bg-[#176449]"
+              onClick={handleDeactivate}
+            >
+              Sí, confirmar llegada
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit response dialog */}
       <Dialog open={editing} onOpenChange={setEditing}>
         <DialogContent className="bg-white text-[#142033] sm:max-w-lg">
           <DialogHeader>

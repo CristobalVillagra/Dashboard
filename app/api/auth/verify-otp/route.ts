@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { getSupabaseAdmin } from "@/lib/supabase-admin"
-import { setRunnerCookie } from "@/lib/runner-auth"
+import { setRunnerCookie, type UserRole } from "@/lib/runner-auth"
 import { normalizeArea } from "@/lib/areas"
 
 function normalizePhone(phone: string) {
@@ -12,9 +12,7 @@ function phoneVariants(phone: string) {
   const digits = normalized.replace(/\D/g, "")
   const variants = new Set([normalized, digits])
 
-  if (digits.startsWith("56")) {
-    variants.add(`+${digits}`)
-  }
+  if (digits.startsWith("56")) variants.add(`+${digits}`)
 
   if (digits.length === 9 && digits.startsWith("9")) {
     variants.add(`+56${digits}`)
@@ -37,6 +35,7 @@ export async function POST(request: Request) {
 
     const supabase = getSupabaseAdmin()
     const now = new Date().toISOString()
+
     const { data: otp, error: otpError } = await supabase
       .from("otp_sessions")
       .select("id,telefono,codigo,usado,expira_en")
@@ -56,7 +55,7 @@ export async function POST(request: Request) {
       .from("usuarios")
       .select("telefono,nombre,rol,area,estado_usuario,local_id")
       .eq("telefono", otp.telefono)
-      .in("rol", ["runner", "admin"])
+      .in("rol", ["runner", "admin", "picker"])
       .single()
 
     if (userError || !user) {
@@ -64,7 +63,10 @@ export async function POST(request: Request) {
     }
 
     if (user.estado_usuario !== "activo") {
-      return NextResponse.json({ error: "Tu cuenta no esta activa o pendiente de aprobacion." }, { status: 403 })
+      return NextResponse.json(
+        { error: "Tu cuenta no esta activa o pendiente de aprobacion." },
+        { status: 403 },
+      )
     }
 
     await supabase.from("otp_sessions").update({ usado: true }).eq("id", otp.id)
@@ -76,29 +78,32 @@ export async function POST(request: Request) {
     const sessionUser = {
       telefono: otp.telefono,
       nombre: user.nombre || "Usuario",
-      rol: user.rol as "runner" | "admin",
+      rol: user.rol as UserRole,
       area: normalizeArea(user.area),
       localId: (user.local_id as string | null) || null,
+      loginAt: now,  // guardamos timestamp de login para filtrar "respondidas en sesión"
     }
 
     await setRunnerCookie(sessionUser)
 
+    const userInfo = {
+      telefono: sessionUser.telefono,
+      nombre: sessionUser.nombre,
+      rol: sessionUser.rol,
+      area: sessionUser.area,
+      localId: sessionUser.localId,
+    }
+
     return NextResponse.json({
       ok: true,
-      user: {
-        telefono: sessionUser.telefono,
-        nombre: sessionUser.nombre,
-        rol: sessionUser.rol,
-        area: sessionUser.area,
-        localId: sessionUser.localId,
-      },
+      user: userInfo,
       runner:
         sessionUser.rol === "runner"
-          ? {
-              telefono: sessionUser.telefono,
-              nombre: sessionUser.nombre,
-              area: sessionUser.area,
-            }
+          ? { telefono: sessionUser.telefono, nombre: sessionUser.nombre, area: sessionUser.area }
+          : undefined,
+      picker:
+        sessionUser.rol === "picker"
+          ? { telefono: sessionUser.telefono, nombre: sessionUser.nombre, area: sessionUser.area }
           : undefined,
     })
   } catch (error) {

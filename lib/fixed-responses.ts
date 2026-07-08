@@ -161,7 +161,10 @@ export async function updateFixedResponse(
   }
 
   const payload: Record<string, string | boolean> = {}
-  if (updates.activo !== undefined) payload.activo = Boolean(updates.activo)
+  if (updates.activo !== undefined) {
+    payload.activo = Boolean(updates.activo)
+    if (!updates.activo) payload.respuesta_fija = false
+  }
   if (updates.respuesta !== undefined) {
     const clean = String(updates.respuesta || "").trim()
     if (clean.length < 2) throw new Error("La respuesta debe tener al menos 2 caracteres.")

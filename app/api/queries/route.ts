@@ -28,7 +28,7 @@ export async function GET(request: Request) {
   let query = supabase
     .from("consultas_sku")
     .select(
-      "id,sku,marca_producto,area,telefono_picker,mensaje_original,estado,respuesta_runner,created_at,assigned_at,local_id",
+      "id,sku,marca_producto,area,telefono_picker,picker_nombre,mensaje_original,estado,respuesta_runner,nombre_runner,created_at,assigned_at,responded_at,local_id,canal",
     )
     .gte("created_at", activeWindowStart)
     .order("created_at", { ascending: true })
@@ -46,10 +46,12 @@ export async function GET(request: Request) {
     } else if (areaParam) {
       const selectedArea = normalizeArea(areaParam)
       if (selectedArea) {
-        query = query.eq("area", selectedArea)
+        // Incluye consultas sin área (canal app sin área definida) y del área seleccionada
+        query = query.or(`area.eq.${selectedArea},area.is.null`)
       }
     } else if (runnerArea) {
-      query = query.eq("area", runnerArea)
+      // Incluye consultas sin área (canal app sin área definida) y del área del runner
+      query = query.or(`area.eq.${runnerArea},area.is.null`)
     }
   }
 
@@ -61,7 +63,11 @@ export async function GET(request: Request) {
   }
 
   const rows = ((data || []) as ConsultaRow[]).filter((row) => {
-    return validSkuPattern.test(String(row.sku || "").trim().toUpperCase()) && Boolean(normalizeArea(row.area))
+    // Permite consultas de canal 'app' aunque no tengan area asignada
+    const hasValidSku = validSkuPattern.test(String(row.sku || "").trim().toUpperCase())
+    const hasValidArea = Boolean(normalizeArea(row.area))
+    const isAppChannel = row.canal === "app"
+    return hasValidSku && (hasValidArea || isAppChannel)
   })
 
   const skus = Array.from(new Set(rows.map((row) => String(row.sku).trim().toUpperCase())))

@@ -12,7 +12,7 @@ export async function GET() {
 
   try {
     const supabase = getSupabaseAdmin()
-    const responses = await listFixedResponses(supabase)
+    const responses = await listFixedResponses(supabase, { onlyActive: true })
     return NextResponse.json({ responses })
   } catch (error) {
     console.error(error)

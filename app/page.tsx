@@ -22,9 +22,8 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { QuerySortControls } from "@/components/query-sort-controls"
 import { formatAreaLabel } from "@/lib/areas"
 import {
-  filterAntiguasPendingGroups,
   filterNuevasGroups,
-  listAntiguasRespondedConsultas,
+  listSessionRespondedConsultas,
   type MineRespondedConsulta,
 } from "@/lib/mine-queries"
 import {
@@ -34,7 +33,9 @@ import {
 } from "@/lib/query-groups"
 import { FixedResponseCard } from "@/components/fixed-response-card"
 import { FixedResponseManager } from "@/components/fixed-response-manager"
+import { ImageZoomModal } from "@/components/image-zoom-modal"
 import type { FixedResponseRecord } from "@/lib/fixed-responses"
+import { BrandFooter, BrandLogo } from "@/components/brand-logo"
 import {
   Dialog,
   DialogContent,
@@ -48,6 +49,7 @@ type Runner = {
   telefono: string
   nombre: string
   area: string | null
+  loginAt?: string
 }
 
 type Metrics = {
@@ -63,7 +65,16 @@ type QueryGroupView = QueryGroup
 
 type AreaFilter = "all" | "frio" | "sala" | "gm"
 type ViewTab = "available" | "mine" | "fixed"
-type MineSubTab = "nuevas" | "antiguas"
+type MineSubTab = "nuevas" | "respondidas"
+
+type ChatMessage = {
+  id: number
+  rol_emisor: string
+  nombre: string | null
+  contenido: string | null
+  leido: boolean
+  created_at: string
+}
 type AnswerMode = "disponible" | "no_disponible" | "ir_a_revisar"
 
 const emptyMetrics: Metrics = {
@@ -83,6 +94,7 @@ export default function RunnerHome() {
   const [telefono, setTelefono] = useState("")
   const [registerName, setRegisterName] = useState("")
   const [registerArea, setRegisterArea] = useState<AreaFilter>("frio")
+  const [registerRole, setRegisterRole] = useState<"runner" | "picker">("runner")
   const [needsRegistration, setNeedsRegistration] = useState(false)
   const [codigo, setCodigo] = useState("")
   const [otpSent, setOtpSent] = useState(false)
@@ -102,6 +114,9 @@ export default function RunnerHome() {
   const [editingConsulta, setEditingConsulta] = useState<MineRespondedConsulta | null>(null)
   const [editAnswer, setEditAnswer] = useState("")
   const [savingEdit, setSavingEdit] = useState(false)
+  const [chatConsulta, setChatConsulta] = useState<MineRespondedConsulta | null>(null)
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
+  const [loadingChat, setLoadingChat] = useState(false)
   const [answer, setAnswer] = useState("")
   const [answerMode, setAnswerMode] = useState<AnswerMode>("disponible")
   const [respuestaFija, setRespuestaFija] = useState(false)
@@ -171,7 +186,7 @@ export default function RunnerHome() {
       try {
         const data = await fetchJson<{
           runner?: Runner
-          user?: { rol: string }
+          user?: { rol: string; loginAt?: string }
         }>("/api/session")
 
         if (data.user?.rol === "admin") {
@@ -179,7 +194,16 @@ export default function RunnerHome() {
           return
         }
 
-        setRunner(data.runner || null)
+        if (data.user?.rol === "picker") {
+          window.location.href = "/picker"
+          return
+        }
+
+        if (data.runner) {
+          setRunner({ ...data.runner, loginAt: data.user?.loginAt })
+        } else {
+          setRunner(null)
+        }
       } catch {
         setRunner(null)
       } finally {
@@ -208,22 +232,22 @@ export default function RunnerHome() {
 
   const visibleGroups = useMemo(() => {
     if (viewTab === "mine") {
-      const filtered =
-        mineSubTab === "nuevas" ? filterNuevasGroups(groups) : filterAntiguasPendingGroups(groups)
-      return sortQueryGroups(filtered, sortMode)
+      // "respondidas" no usa visibleGroups (lista flat), "nuevas" sí (grupos)
+      if (mineSubTab === "respondidas") return []
+      return sortQueryGroups(filterNuevasGroups(groups), sortMode)
     }
     return sortQueryGroups(groups, sortMode)
   }, [viewTab, mineSubTab, groups, sortMode])
 
-  const antiguasRespondidas = useMemo(() => {
-    if (viewTab !== "mine" || mineSubTab !== "antiguas") return []
-    return listAntiguasRespondedConsultas(groups)
-  }, [viewTab, mineSubTab, groups])
+  const sessionRespondidas = useMemo(() => {
+    if (viewTab !== "mine" || mineSubTab !== "respondidas") return []
+    return listSessionRespondedConsultas(groups, runner?.loginAt)
+  }, [viewTab, mineSubTab, groups, runner?.loginAt])
 
   const mineListEmpty =
     mineSubTab === "nuevas"
       ? visibleGroups.length === 0
-      : visibleGroups.length === 0 && antiguasRespondidas.length === 0
+      : sessionRespondidas.length === 0
 
   const showEmptyState =
     viewTab === "available"
@@ -247,7 +271,8 @@ export default function RunnerHome() {
         body: JSON.stringify({
           telefono,
           nombre: needsRegistration ? registerName : undefined,
-          area: needsRegistration ? registerArea : undefined,
+          area: needsRegistration && registerRole === "runner" ? registerArea : undefined,
+          rol: needsRegistration ? registerRole : undefined,
         }),
       })
 
@@ -280,7 +305,7 @@ export default function RunnerHome() {
     try {
       const data = await fetchJson<{
         runner?: Runner
-        user?: { rol: string }
+        user?: { rol: string; loginAt?: string }
       }>("/api/auth/verify-otp", {
         method: "POST",
         body: JSON.stringify({ telefono, codigo }),
@@ -291,7 +316,12 @@ export default function RunnerHome() {
         return
       }
 
-      setRunner(data.runner || null)
+      if (data.user?.rol === "picker") {
+        window.location.href = "/picker"
+        return
+      }
+
+      setRunner(data.runner ? { ...data.runner, loginAt: data.user?.loginAt } : null)
       setCodigo("")
       setDevCode(null)
       setOtpSent(false)
@@ -309,6 +339,21 @@ export default function RunnerHome() {
     setGroups([])
     setMetrics(emptyMetrics)
     setSuccessMessage("")
+  }
+
+  async function openChat(consulta: MineRespondedConsulta) {
+    setChatConsulta(consulta)
+    setLoadingChat(true)
+    setChatMessages([])
+    try {
+      const res = await fetch(`/api/queries/${consulta.id}/messages`)
+      const data = await res.json()
+      setChatMessages(data.messages || [])
+    } catch {
+      setChatMessages([])
+    } finally {
+      setLoadingChat(false)
+    }
   }
 
   async function claimTicket(group: QueryGroupView) {
@@ -395,11 +440,13 @@ export default function RunnerHome() {
 
       if (data.whatsappOk === false) {
         const firstError = data.dispatchResults?.find((result) => !result.ok)
-        const detail = firstError?.error
-          ? ` Detalle: ${firstError.error}`
-          : firstError?.status
-            ? ` HTTP ${firstError.status}.`
-            : ""
+        const detail = firstError?.status === 401
+          ? " Secret distinto o faltante entre Vercel y n8n."
+          : firstError?.error
+            ? ` Detalle: ${firstError.error}`
+            : firstError?.status
+              ? ` HTTP ${firstError.status}.`
+              : ""
         setSuccessMessage(
           `Respuesta guardada, pero no se pudo enviar WhatsApp al picker. Revisa n8n runner-response-dispatch.${detail}`,
         )
@@ -424,11 +471,12 @@ export default function RunnerHome() {
 
   if (checkingSession) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[#f5f7fb] px-4 text-[#142033]">
+      <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-[#f5f7fb] px-4 text-[#142033]">
         <div className="flex items-center gap-3 rounded-lg border border-[#d9e2ef] bg-white px-4 py-3 shadow-sm">
           <RefreshCw className="size-5 animate-spin text-[#1f7a5b]" />
-          <span className="text-sm font-medium">Validando sesion runner</span>
+          <span className="text-sm font-medium">Cargando usuario...</span>
         </div>
+        <BrandFooter />
       </main>
     )
   }
@@ -437,19 +485,17 @@ export default function RunnerHome() {
     return (
       <main className="min-h-screen bg-[#f5f7fb] px-4 py-5 text-[#142033] sm:px-6">
         <section className="mx-auto flex min-h-[calc(100vh-40px)] w-full max-w-md flex-col justify-center">
-          <div className="mb-8 flex items-center gap-3">
-            <div className="flex size-11 items-center justify-center rounded-lg bg-[#1f7a5b] text-white">
-              <ShieldCheck className="size-6" />
-            </div>
+          <div className="mb-8 flex flex-col items-start gap-3">
+            <BrandLogo height={32} width={130} />
             <div>
-              <p className="text-sm font-semibold uppercase tracking-wide text-[#476179]">AIntegration</p>
-              <h1 className="text-2xl font-bold leading-tight">Runner center</h1>
+              <h1 className="text-2xl font-bold leading-tight text-[#142033]">Panel de acceso</h1>
+              <p className="text-sm text-[#5c6f82]">Runner / Administrador</p>
             </div>
           </div>
 
           <div className="rounded-lg border border-[#d8e0ea] bg-white p-5 shadow-sm">
             <div className="mb-5">
-              <h2 className="text-xl font-semibold">Ingreso por WhatsApp</h2>
+              <h2 className="text-xl font-semibold">Ingreso por OTP</h2>
               <p className="mt-2 text-sm leading-6 text-[#5c6f82]">
                 Escribe tu celular registrado. Recibiras un codigo para activar tu estado y entrar al panel.
               </p>
@@ -474,7 +520,7 @@ export default function RunnerHome() {
               {needsRegistration && !otpSent && (
                 <div className="space-y-4 rounded-md border border-[#d8e0ea] bg-[#f7f9fc] p-3">
                   <div className="space-y-2">
-                    <Label htmlFor="runner-name">Nombre runner</Label>
+                    <Label htmlFor="runner-name">Nombre completo</Label>
                     <Input
                       id="runner-name"
                       value={registerName}
@@ -484,19 +530,37 @@ export default function RunnerHome() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>Area asignada</Label>
-                    <div className="grid grid-cols-3 rounded-md border border-[#cfd9e5] bg-white p-1 text-sm">
-                      <SortButton active={registerArea === "frio"} onClick={() => setRegisterArea("frio")}>
-                        Frio
+                    <Label>Tipo de cuenta</Label>
+                    <div className="grid grid-cols-2 rounded-md border border-[#cfd9e5] bg-white p-1 text-sm">
+                      <SortButton active={registerRole === "runner"} onClick={() => setRegisterRole("runner")}>
+                        Runner
                       </SortButton>
-                      <SortButton active={registerArea === "sala"} onClick={() => setRegisterArea("sala")}>
-                        Sala
-                      </SortButton>
-                      <SortButton active={registerArea === "gm"} onClick={() => setRegisterArea("gm")}>
-                        GM
+                      <SortButton active={registerRole === "picker"} onClick={() => setRegisterRole("picker")}>
+                        Picker
                       </SortButton>
                     </div>
                   </div>
+                  {registerRole === "runner" && (
+                    <div className="space-y-2">
+                      <Label>Area asignada</Label>
+                      <div className="grid grid-cols-3 rounded-md border border-[#cfd9e5] bg-white p-1 text-sm">
+                        <SortButton active={registerArea === "frio"} onClick={() => setRegisterArea("frio")}>
+                          Frio
+                        </SortButton>
+                        <SortButton active={registerArea === "sala"} onClick={() => setRegisterArea("sala")}>
+                          Sala
+                        </SortButton>
+                        <SortButton active={registerArea === "gm"} onClick={() => setRegisterArea("gm")}>
+                          GM
+                        </SortButton>
+                      </div>
+                    </div>
+                  )}
+                  {registerRole === "picker" && (
+                    <p className="text-xs text-[#5c6f82]">
+                      Los pickers ingresan por <strong>/picker</strong>. El admin debe aprobar tu cuenta primero.
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -517,7 +581,7 @@ export default function RunnerHome() {
 
               {devCode && (
                 <div className="rounded-md border border-[#f0c36a] bg-[#fff8e7] px-3 py-2 text-sm text-[#745015]">
-                  Modo prueba sin webhook WhatsApp: codigo <strong>{devCode}</strong>
+                  Modo prueba — codigo: <strong>{devCode}</strong>
                 </div>
               )}
 
@@ -539,7 +603,10 @@ export default function RunnerHome() {
                 type="button"
                 className="h-12 w-full bg-[#1f7a5b] text-base text-white hover:bg-[#176449]"
                 onClick={otpSent ? verifyOtp : requestOtp}
-                disabled={loadingAuth || (needsRegistration && !otpSent && registerName.trim().length < 2)}
+                disabled={
+                  loadingAuth ||
+                  (needsRegistration && !otpSent && registerName.trim().length < 2)
+                }
               >
                 {loadingAuth && <RefreshCw className="size-4 animate-spin" />}
                 {otpSent ? "Iniciar sesion" : needsRegistration ? "Solicitar registro" : "Enviar codigo"}
@@ -547,6 +614,9 @@ export default function RunnerHome() {
             </div>
           </div>
         </section>
+        <div className="pb-8 pt-4">
+          <BrandFooter />
+        </div>
       </main>
     )
   }
@@ -556,7 +626,7 @@ export default function RunnerHome() {
       <header className="sticky top-0 z-20 border-b border-[#dce4ee] bg-white/95 px-3 py-2 backdrop-blur sm:px-6 sm:py-3">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-wide text-[#1f7a5b]">Runner activo</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-[#1f7a5b]">Panel de runner</p>
             <h1 className="truncate text-lg font-bold sm:text-xl">{runner.nombre}</h1>
           </div>
           <div className="flex items-center gap-2">
@@ -635,8 +705,8 @@ export default function RunnerHome() {
             <SortButton active={mineSubTab === "nuevas"} onClick={() => setMineSubTab("nuevas")}>
               Nuevas
             </SortButton>
-            <SortButton active={mineSubTab === "antiguas"} onClick={() => setMineSubTab("antiguas")}>
-              Antiguas
+            <SortButton active={mineSubTab === "respondidas"} onClick={() => setMineSubTab("respondidas")}>
+              Respondidas
             </SortButton>
           </div>
         )}
@@ -679,7 +749,7 @@ export default function RunnerHome() {
           </div>
         )}
 
-        {viewTab !== "fixed" && !(viewTab === "mine" && mineSubTab === "antiguas") && (
+        {viewTab !== "fixed" && !(viewTab === "mine" && mineSubTab === "respondidas") && (
           <div className="mt-4 grid gap-3 lg:grid-cols-2">
             {visibleGroups.map((group) => (
             <div
@@ -755,9 +825,9 @@ export default function RunnerHome() {
           </div>
         )}
 
-        {viewTab === "mine" && mineSubTab === "antiguas" && (
+        {viewTab === "mine" && mineSubTab === "respondidas" && (
           <div className="mt-4 grid gap-3 lg:grid-cols-2">
-            {antiguasRespondidas.map((consulta) => (
+            {sessionRespondidas.map((consulta) => (
               <div
                 key={consulta.id}
                 className="min-w-0 rounded-lg border border-[#d8e0ea] bg-white p-3 shadow-sm sm:p-4"
@@ -776,82 +846,58 @@ export default function RunnerHome() {
                           <p className="mt-1 text-sm font-medium text-[#476179]">{consulta.marcaProducto}</p>
                         )}
                       </div>
-                      <span className="shrink-0 rounded-md bg-[#eefaf3] px-2.5 py-1 text-xs font-semibold text-[#1f6a4f]">
-                        Respondida
+                      <span className={`shrink-0 rounded-md px-2.5 py-1 text-xs font-semibold ${
+                        consulta.estado === "no_disponible"
+                          ? "bg-red-50 text-red-600"
+                          : "bg-[#eefaf3] text-[#1f6a4f]"
+                      }`}>
+                        {consulta.estado === "no_disponible" ? "No disponible" : "Respondida"}
                       </span>
                     </div>
-                    <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-[#5c6f82]">
+                    <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed text-[#5c6f82]">
                       {consulta.respuesta_runner || "Sin respuesta registrada."}
                     </p>
-                    <div className="mt-4 flex flex-wrap gap-2 text-xs text-[#476179]">
+                    <div className="mt-3 flex flex-wrap gap-2 text-xs text-[#476179]">
                       <span className="rounded-md bg-[#f0f4f8] px-2 py-1">{formatAreaLabel(consulta.area)}</span>
-                      {consulta.assigned_at && (
+                      {consulta.responded_at && (
                         <span className="inline-flex items-center gap-1 rounded-md bg-[#f0f4f8] px-2 py-1">
                           <Clock3 className="size-3" />
-                          {new Date(consulta.assigned_at).toLocaleString("es-CL")}
+                          {new Date(consulta.responded_at).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })}
                         </span>
                       )}
                     </div>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="mt-4"
-                      onClick={() => {
-                        setEditingConsulta(consulta)
-                        setEditAnswer(consulta.respuesta_runner || "")
-                      }}
-                    >
-                      Editar respuesta
-                    </Button>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="border-[#1f7a5b] text-[#1f7a5b] hover:bg-[#f0faf6]"
+                        onClick={() => openChat(consulta)}
+                      >
+                        <MessageCircle className="size-3.5" />
+                        Ver chat
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setEditingConsulta(consulta)
+                          setEditAnswer(consulta.respuesta_runner || "")
+                        }}
+                      >
+                        Editar respuesta
+                      </Button>
+                    </div>
                   </div>
                 </div>
               </div>
             ))}
+            {/* visibleGroups siempre vacío en tab respondidas */}
             {visibleGroups.map((group) => (
-              <div
-                key={`antiguas-pending-${group.sku}-${group.area}-${group.consultaIds.join("-")}`}
-                className="min-w-0 rounded-lg border border-[#d8e0ea] bg-white p-3 shadow-sm sm:p-4"
-              >
-                <div className="flex gap-3">
-                  <ProductImage url={group.imagenUrl} alt={group.nombreProducto || group.marcaProducto || group.sku} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-[#6b7c8f]">SKU</p>
-                        <h3 className="mt-1 break-all text-lg font-bold leading-snug sm:text-xl">{group.sku}</h3>
-                        {group.nombreProducto && (
-                          <p className="mt-1 text-sm font-semibold text-[#142033]">{group.nombreProducto}</p>
-                        )}
-                        {group.marcaProducto && (
-                          <p className="mt-1 text-sm font-medium text-[#476179]">{group.marcaProducto}</p>
-                        )}
-                      </div>
-                      <span className="shrink-0 rounded-md bg-[#fff8e7] px-2.5 py-1 text-sm font-semibold text-[#745015]">
-                        {group.total}
-                      </span>
-                    </div>
-                    <p className="mt-3 line-clamp-2 text-sm leading-6 text-[#5c6f82]">
-                      {group.sampleMessage || "Sin mensaje original registrado."}
-                    </p>
-                    <div className="mt-4 flex flex-wrap gap-2 text-xs text-[#476179]">
-                      <span className="rounded-md bg-[#f0f4f8] px-2 py-1">{group.pickers.length} picker(s)</span>
-                      <span className="rounded-md bg-[#e7f5ee] px-2 py-1 font-semibold text-[#1f6a4f]">
-                        {formatArea(group.area)}
-                      </span>
-                    </div>
-                    <Button
-                      type="button"
-                      className="mt-4 bg-[#1f7a5b] text-white hover:bg-[#176449]"
-                      onClick={() => {
-                        setSelected(group)
-                        setAnswer("")
-                        setAnswerMode("disponible")
-                        setRespuestaFija(false)
-                      }}
-                    >
-                      Responder
-                    </Button>
-                  </div>
+              <div key={group.sku} className="hidden">
+                <span>{group.sku}</span>
+                <div>
                 </div>
               </div>
             ))}
@@ -896,14 +942,14 @@ export default function RunnerHome() {
                 ? "No hay solicitudes disponibles"
                 : mineSubTab === "nuevas"
                   ? "No tienes tickets nuevos asignados"
-                  : "No tienes solicitudes antiguas"}
+                  : "No has respondido consultas en esta sesión"}
             </h3>
             <p className="mt-1 text-sm text-[#5c6f82]">
               {viewTab === "available"
                 ? "Cuando entren nuevos SKUs apareceran aqui."
                 : mineSubTab === "nuevas"
                   ? "Toma tickets desde la pestana Disponibles."
-                  : "Las consultas respondidas hace mas de 24 horas apareceran aqui."}
+                  : "Las consultas que respondas aparecerán aquí."}
             </p>
           </div>
         )}
@@ -935,13 +981,13 @@ export default function RunnerHome() {
                 </div>
               </div>
               <div className="grid grid-cols-3 rounded-md border border-[#cfd9e5] bg-[#f7f9fc] p-1 text-sm">
-                <SortButton active={answerMode === "disponible"} onClick={() => setAnswerMode("disponible")}>
+                <SortButton active={answerMode === "disponible"} onClick={() => { setAnswerMode("disponible"); setRespuestaFija(false) }}>
                   Disponible
                 </SortButton>
                 <SortButton active={answerMode === "no_disponible"} onClick={() => setAnswerMode("no_disponible")}>
                   No disponible
                 </SortButton>
-                <SortButton active={answerMode === "ir_a_revisar"} onClick={() => setAnswerMode("ir_a_revisar")}>
+                <SortButton active={answerMode === "ir_a_revisar"} onClick={() => { setAnswerMode("ir_a_revisar"); setRespuestaFija(false) }}>
                   Ir a revisar
                 </SortButton>
               </div>
@@ -961,11 +1007,23 @@ export default function RunnerHome() {
                   className="min-h-32 border-[#cfd9e5] bg-white text-base text-[#142033]"
                 />
               </div>
-              {answerMode !== "ir_a_revisar" && (
-                <label className="flex items-center gap-2 text-sm text-[#476179]">
-                  <Checkbox checked={respuestaFija} onCheckedChange={(checked) => setRespuestaFija(checked === true)} />
-                  Marcar como respuesta fija (no expira en la limpieza diaria)
-                </label>
+              {answerMode === "no_disponible" && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
+                  <label className="flex cursor-pointer items-start gap-2 text-sm">
+                    <Checkbox
+                      className="mt-0.5 shrink-0"
+                      checked={respuestaFija}
+                      onCheckedChange={(checked) => setRespuestaFija(checked === true)}
+                    />
+                    <div>
+                      <p className="font-semibold text-amber-800">⚠️ Fijar permanentemente</p>
+                      <p className="mt-0.5 text-xs text-amber-700">
+                        Usa esto solo para productos con problema grave de stock (descontinuado, sin reposición).
+                        Esta respuesta NO expirará automáticamente y deberá desactivarla el administrador.
+                      </p>
+                    </div>
+                  </label>
+                </div>
               )}
             </div>
           )}
@@ -1034,6 +1092,87 @@ export default function RunnerHome() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ── Modal de chat de consulta (respondidas en sesión) ── */}
+      <Dialog
+        open={Boolean(chatConsulta)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setChatConsulta(null)
+            setChatMessages([])
+          }
+        }}
+      >
+        <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-lg">
+          <DialogHeader className="shrink-0">
+            <DialogTitle className="text-sm">
+              Chat: {chatConsulta?.sku}
+              {chatConsulta?.nombreProducto && (
+                <span className="ml-2 font-normal text-[#5c6f82]">— {chatConsulta.nombreProducto}</span>
+              )}
+            </DialogTitle>
+            <DialogDescription className="text-xs text-[#8ba3b8]">
+              Hilo de mensajes de esta consulta
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex-1 overflow-y-auto space-y-2 py-2 min-h-0">
+            {loadingChat && (
+              <div className="flex justify-center py-6">
+                <RefreshCw className="size-4 animate-spin text-[#1f7a5b]" />
+              </div>
+            )}
+
+            {!loadingChat && chatMessages.length === 0 && (
+              <p className="py-6 text-center text-xs text-[#8ba3b8]">Sin mensajes en este chat.</p>
+            )}
+
+            {chatMessages.map((m) => {
+              const isRunner = m.rol_emisor === "runner"
+              const isSistema = m.rol_emisor === "sistema"
+
+              if (isSistema) {
+                return (
+                  <div key={m.id} className="flex justify-center">
+                    <p className="rounded-full bg-[#f0f4f8] px-3 py-1 text-center text-[10px] text-[#5c6f82]">
+                      {m.contenido}
+                    </p>
+                  </div>
+                )
+              }
+
+              return (
+                <div key={m.id} className={`flex ${isRunner ? "justify-end" : "justify-start"}`}>
+                  <div
+                    className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm ${
+                      isRunner
+                        ? "rounded-br-sm bg-[#1f7a5b] text-white"
+                        : "rounded-bl-sm bg-[#f0f4f8] text-[#142033]"
+                    }`}
+                  >
+                    {!isRunner && m.nombre && (
+                      <p className="mb-0.5 text-[10px] font-semibold text-[#5c6f82]">{m.nombre}</p>
+                    )}
+                    <p className="whitespace-pre-wrap leading-snug">{m.contenido}</p>
+                    <p className={`mt-0.5 text-right text-[9px] ${isRunner ? "text-white/60" : "text-[#8ba3b8]"}`}>
+                      {new Date(m.created_at).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })}
+                    </p>
+                  </div>
+                </div>
+              )
+            })}
+
+            {/* Fallback: respuesta final si no hay mensajes de runner */}
+            {!loadingChat && chatConsulta?.respuesta_runner && !chatMessages.find((m) => m.rol_emisor === "runner") && (
+              <div className="flex justify-end">
+                <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-[#1f7a5b] px-3 py-2 text-sm text-white">
+                  <p className="whitespace-pre-wrap leading-snug">{chatConsulta.respuesta_runner}</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </main>
   )
 }
@@ -1048,6 +1187,7 @@ function ProductImage({
   size?: "sm" | "md"
 }) {
   const [failed, setFailed] = useState(false)
+  const [zoomOpen, setZoomOpen] = useState(false)
   const className =
     size === "sm"
       ? "flex size-16 shrink-0 items-center justify-center rounded-md border border-[#d8e0ea] bg-[#f7f9fc]"
@@ -1062,13 +1202,24 @@ function ProductImage({
   }
 
   return (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
-      src={url}
-      alt={alt}
-      className={`${className} object-cover`}
-      onError={() => setFailed(true)}
-    />
+    <>
+      <button
+        type="button"
+        className={`${className} overflow-hidden transition active:scale-95`}
+        onClick={() => setZoomOpen(true)}
+        aria-label={`Ver imagen de ${alt}`}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={url}
+          alt={alt}
+          className="size-full object-cover"
+          onError={() => setFailed(true)}
+        />
+      </button>
+
+      <ImageZoomModal open={zoomOpen} src={url} alt={alt} onClose={() => setZoomOpen(false)} />
+    </>
   )
 }
 

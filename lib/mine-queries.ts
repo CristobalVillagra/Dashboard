@@ -84,3 +84,42 @@ export function listAntiguasRespondedConsultas(groups: QueryGroup[]) {
     (a, b) => new Date(b.assigned_at || 0).getTime() - new Date(a.assigned_at || 0).getTime(),
   )
 }
+
+/** Consultas respondidas desde loginAt (sesión activa del runner) */
+export function listSessionRespondedConsultas(groups: QueryGroup[], loginAt?: string) {
+  // Si no hay loginAt, usar las últimas 8 horas como proxy de "esta sesión"
+  const sessionStart = loginAt
+    ? new Date(loginAt).getTime()
+    : Date.now() - 8 * 60 * 60 * 1000
+
+  const items: MineRespondedConsulta[] = []
+
+  for (const group of groups) {
+    for (const consulta of group.consultas) {
+      if (!isMineResponded(consulta.estado)) continue
+
+      const respondedTime = consulta.responded_at
+        ? new Date(consulta.responded_at).getTime()
+        : consulta.assigned_at
+          ? new Date(consulta.assigned_at).getTime()
+          : 0
+
+      if (respondedTime < sessionStart) continue
+
+      items.push({
+        ...consulta,
+        sku: group.sku,
+        nombreProducto: group.nombreProducto,
+        marcaProducto: group.marcaProducto,
+        area: group.area,
+        imagenUrl: group.imagenUrl,
+      })
+    }
+  }
+
+  return items.sort(
+    (a, b) =>
+      new Date(b.responded_at || b.assigned_at || 0).getTime() -
+      new Date(a.responded_at || a.assigned_at || 0).getTime(),
+  )
+}

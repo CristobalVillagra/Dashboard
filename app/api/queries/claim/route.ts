@@ -25,28 +25,7 @@ export async function POST(request: Request) {
     const now = new Date().toISOString()
     const runnerArea = normalizeArea(runner.area)
 
-    const { data: pendingRows, error: selectError } = await supabase
-      .from("consultas_sku")
-      .select("id,sku,area,estado,telefono_runner")
-      .in("id", ids)
-      .eq("estado", "pendiente_sin_asignar")
-      .is("telefono_runner", null)
-
-    if (selectError) throw selectError
-
-    const claimableIds = (pendingRows || [])
-      .filter((row) => {
-        const rowSku = String(row.sku || "").trim().toUpperCase()
-        const rowArea = normalizeArea(row.area)
-        return rowSku === cleanSku && (!runnerArea || rowArea === runnerArea)
-      })
-      .map((row) => row.id)
-
-    if (claimableIds.length === 0) {
-      return NextResponse.json({ error: "Estas consultas ya no estan disponibles." }, { status: 409 })
-    }
-
-    const { error: updateError } = await supabase
+    let updateQuery = supabase
       .from("consultas_sku")
       .update({
         estado: "tomada",
@@ -54,16 +33,73 @@ export async function POST(request: Request) {
         nombre_runner: runner.nombre,
         assigned_at: now,
       })
-      .in("id", claimableIds)
+      .in("id", ids)
+      .ilike("sku", cleanSku)
+      .eq("estado", "pendiente_sin_asignar")
+      .is("telefono_runner", null)
+
+    if (runnerArea) {
+      // Acepta consultas del área del runner O consultas sin área (ej. canal app sin área definida)
+      updateQuery = updateQuery.or(`area.eq.${runnerArea},area.is.null`)
+    }
+
+    const { data: claimedRows, error: updateError } = await updateQuery.select("id,sku,area")
 
     if (updateError) throw updateError
 
-    return NextResponse.json({
-      ok: true,
-      sku: cleanSku,
-      claimedConsultas: claimableIds.length,
-      consultaIds: claimableIds,
+    const claimableIds = (claimedRows || []).map((row) => row.id)
+
+    if (claimableIds.length > 0) {
+      return NextResponse.json({
+        ok: true,
+        sku: cleanSku,
+        claimedConsultas: claimableIds.length,
+        consultaIds: claimableIds,
+      })
+    }
+
+    const { data: candidateRows, error: selectError } = await supabase
+      .from("consultas_sku")
+      .select("id,sku,area,estado,telefono_runner")
+      .in("id", ids)
+
+    if (selectError) throw selectError
+
+    const rows = candidateRows || []
+    const sameSkuRows = rows.filter((row) => String(row.sku || "").trim().toUpperCase() === cleanSku)
+    const unavailableRows = sameSkuRows.filter(
+      (row) => row.estado !== "pendiente_sin_asignar" || Boolean(row.telefono_runner),
+    )
+    const wrongAreaRows = sameSkuRows.filter((row) => {
+      const rowArea = normalizeArea(row.area)
+      return row.estado === "pendiente_sin_asignar" && !row.telefono_runner && runnerArea && rowArea !== runnerArea
     })
+
+    if (wrongAreaRows.length > 0) {
+      const area = normalizeArea(wrongAreaRows[0]?.area)
+      return NextResponse.json(
+        {
+          error: `Este SKU pertenece a ${area || "otra area"} y tu usuario runner esta asignado a ${runnerArea || "sin area"}.`,
+          reason: "AREA_NO_PERMITIDA",
+        },
+        { status: 409 },
+      )
+    }
+
+    if (unavailableRows.length > 0) {
+      return NextResponse.json(
+        {
+          error: "Estas consultas ya fueron tomadas o cambiaron de estado. Actualiza el dashboard.",
+          reason: "YA_NO_DISPONIBLE",
+        },
+        { status: 409 },
+      )
+    }
+
+    return NextResponse.json(
+      { error: "Estas consultas ya no estan disponibles. Actualiza el dashboard.", reason: "NO_ENCONTRADA" },
+      { status: 409 },
+    )
   } catch (error) {
     console.error(error)
     return NextResponse.json({ error: "No se pudo tomar la consulta." }, { status: 500 })

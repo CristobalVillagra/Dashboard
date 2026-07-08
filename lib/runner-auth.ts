@@ -4,22 +4,27 @@ import { getSupabaseAdmin } from "@/lib/supabase-admin"
 import { normalizeArea } from "@/lib/areas"
 
 const COOKIE_NAME = "runner_session"
-const INACTIVITY_LIMIT_MS = 60 * 60 * 1000
+const INACTIVITY_LIMIT_MS = 60 * 60 * 1000          // runners: 1h
+const PICKER_INACTIVITY_LIMIT_MS = 14 * 60 * 60 * 1000 // pickers: 14h turno
+
+export type UserRole = "runner" | "admin" | "picker"
 
 export type AppUser = {
   telefono: string
   nombre: string
-  rol: "runner" | "admin"
+  rol: UserRole
   area: string | null
   localId: string | null
+  loginAt?: string
 }
 
 type SessionPayload = {
   telefono: string
   nombre: string
-  rol: "runner" | "admin"
+  rol: UserRole
   area: string | null
   localId: string | null
+  loginAt?: string   // ISO timestamp del login para filtrar "esta sesión"
 }
 
 function getSessionSecret() {
@@ -36,13 +41,25 @@ export function createRunnerSessionCookie(payload: SessionPayload) {
 }
 
 export async function setRunnerCookie(payload: SessionPayload) {
+  // Duración real de sesión según rol:
+  // - runner/admin: 4 horas (turno máximo)
+  // - picker: 14 horas (turno completo)
+  // - dev: 2 horas (para no acumular sesiones al reiniciar)
+  const isDev = process.env.NODE_ENV === "development"
+  const maxAgeByRole =
+    isDev
+      ? 2 * 60 * 60
+      : payload.rol === "picker"
+        ? 14 * 60 * 60
+        : 4 * 60 * 60
+
   const cookieStore = await cookies()
   cookieStore.set(COOKIE_NAME, createRunnerSessionCookie(payload), {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     path: "/",
-    maxAge: 60 * 60 * 24 * 30,
+    maxAge: maxAgeByRole,
   })
 }
 
@@ -57,8 +74,10 @@ export async function readRunnerSession() {
 
   if (!value) return null
 
-  const [encoded, signature] = value.split(".")
-  if (!encoded || !signature) return null
+  const dotIndex = value.lastIndexOf(".")
+  if (dotIndex < 0) return null
+  const encoded = value.slice(0, dotIndex)
+  const signature = value.slice(dotIndex + 1)
 
   const expected = sign(encoded)
   const actualBuffer = Buffer.from(signature)
@@ -78,7 +97,10 @@ export async function readRunnerSession() {
   }
 }
 
-export async function requireActiveUser({ touch = true, roles = ["runner", "admin"] as Array<"runner" | "admin"> } = {}) {
+export async function requireActiveUser({
+  touch = true,
+  roles = ["runner", "admin"] as UserRole[],
+} = {}) {
   const session = await readRunnerSession()
   if (!session) {
     return { user: null, reason: "NO_SESSION" as const }
@@ -91,7 +113,7 @@ export async function requireActiveUser({ touch = true, roles = ["runner", "admi
     .eq("telefono", session.telefono)
     .single()
 
-  if (error || !user || !roles.includes(user.rol as "runner" | "admin")) {
+  if (error || !user || !roles.includes(user.rol as UserRole)) {
     await clearRunnerCookie()
     return { user: null, reason: "INVALID_USER" as const }
   }
@@ -102,7 +124,8 @@ export async function requireActiveUser({ touch = true, roles = ["runner", "admi
   }
 
   const lastUse = user.ultimo_uso ? new Date(user.ultimo_uso).getTime() : 0
-  const inactiveTooLong = !user.activo || Date.now() - lastUse > INACTIVITY_LIMIT_MS
+  const limit = user.rol === "picker" ? PICKER_INACTIVITY_LIMIT_MS : INACTIVITY_LIMIT_MS
+  const inactiveTooLong = !user.activo || Date.now() - lastUse > limit
 
   if (inactiveTooLong) {
     await supabase.from("usuarios").update({ activo: false }).eq("telefono", session.telefono)
@@ -120,9 +143,10 @@ export async function requireActiveUser({ touch = true, roles = ["runner", "admi
   const appUser: AppUser = {
     telefono: user.telefono as string,
     nombre: (user.nombre as string) || session.nombre,
-    rol: user.rol as "runner" | "admin",
+    rol: user.rol as UserRole,
     area: normalizeArea((user.area as string | null) || session.area),
     localId: (user.local_id as string | null) || session.localId || null,
+    loginAt: session.loginAt,
   }
 
   return { user: appUser, reason: null }
@@ -130,18 +154,20 @@ export async function requireActiveUser({ touch = true, roles = ["runner", "admi
 
 export async function requireActiveRunner(options?: { touch?: boolean }) {
   const result = await requireActiveUser({ ...options, roles: ["runner"] })
-  if (!result.user) {
-    return { runner: null, reason: result.reason }
-  }
+  if (!result.user) return { runner: null, reason: result.reason }
   return { runner: result.user, reason: null }
 }
 
 export async function requireActiveAdmin(options?: { touch?: boolean }) {
   const result = await requireActiveUser({ ...options, roles: ["admin"] })
-  if (!result.user) {
-    return { admin: null, reason: result.reason }
-  }
+  if (!result.user) return { admin: null, reason: result.reason }
   return { admin: result.user, reason: null }
+}
+
+export async function requireActivePicker(options?: { touch?: boolean }) {
+  const result = await requireActiveUser({ ...options, roles: ["picker"] })
+  if (!result.user) return { picker: null, reason: result.reason }
+  return { picker: result.user, reason: null }
 }
 
 export function generateOtpCode() {

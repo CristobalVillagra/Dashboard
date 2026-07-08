@@ -14,12 +14,16 @@ export type ConsultaRow = {
   nombre_producto?: string | null
   marca_producto?: string | null
   area: string | null
+  canal?: string | null
   telefono_picker?: string | null
+  picker_nombre?: string | null
   mensaje_original?: string | null
   created_at: string | null
   assigned_at?: string | null
+  responded_at?: string | null
   estado?: string | null
   respuesta_runner?: string | null
+  nombre_runner?: string | null
   imagen_url?: string | null
 }
 
@@ -27,7 +31,9 @@ export type QueryGroupConsulta = {
   id: string
   estado: string
   respuesta_runner: string | null
+  nombre_runner?: string | null
   assigned_at: string | null
+  responded_at?: string | null
 }
 
 export type QueryGroup = {
