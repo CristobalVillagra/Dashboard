@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { listFixedResponses, updateFixedResponse } from "@/lib/fixed-responses"
+import { listFixedResponses, listRecentFixedResponseChanges, updateFixedResponse } from "@/lib/fixed-responses"
 import { getSupabaseAdmin } from "@/lib/supabase-admin"
 import { requireActiveRunner } from "@/lib/runner-auth"
 
@@ -12,8 +12,11 @@ export async function GET() {
 
   try {
     const supabase = getSupabaseAdmin()
-    const responses = await listFixedResponses(supabase)
-    return NextResponse.json({ responses, runnerTelefono: runner.telefono })
+    const [responses, recientes] = await Promise.all([
+      listFixedResponses(supabase),
+      listRecentFixedResponseChanges(supabase),
+    ])
+    return NextResponse.json({ responses, recientes, runnerTelefono: runner.telefono })
   } catch (error) {
     console.error(error)
     return NextResponse.json({ error: "No se pudieron cargar respuestas fijas." }, { status: 500 })
@@ -42,7 +45,10 @@ export async function PATCH(request: Request) {
         activo: activo !== undefined ? Boolean(activo) : undefined,
         respuesta: respuesta !== undefined ? String(respuesta) : undefined,
       },
-      { runnerTelefono: runner.telefono },
+      {
+        runnerTelefono: runner.telefono,
+        desfijadoPor: activo === false ? runner.nombre || runner.telefono : undefined,
+      },
     )
 
     return NextResponse.json({ ok: true, response: data })

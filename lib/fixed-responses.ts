@@ -1,6 +1,25 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { insightFromProductRow, isStaleNoDisponibleReport } from "@/lib/product-insights"
 
+export function formatDaysSinceFixed(iso: string | null | undefined, now = Date.now()): string {
+  if (!iso) return ""
+  const diffMs = now - new Date(iso).getTime()
+  if (diffMs < 0) return "0 h"
+  const hours = Math.floor(diffMs / (1000 * 60 * 60))
+  if (hours < 1) return "1 h"
+  if (hours < 24) return `${hours} h`
+  const days = Math.floor(hours / 24)
+  return days === 1 ? "1 día" : `${days} días`
+}
+
+export function fixedSinceIso(response: {
+  fijado_at?: string | null
+  ultima_respuesta_en?: string | null
+  created_at?: string | null
+}) {
+  return response.fijado_at || response.ultima_respuesta_en || response.created_at || null
+}
+
 export type FixedResponseRecord = {
   id: string
   sku: string
@@ -14,6 +33,10 @@ export type FixedResponseRecord = {
   estado_respuesta: string | null
   ultima_respuesta_en: string | null
   expires_at: string | null
+  fijado_por: string | null
+  fijado_at: string | null
+  desfijado_por: string | null
+  desfijado_at: string | null
   imagen_url: string | null
   nombre_producto?: string | null
   reportes_no_disponible?: number | null
@@ -35,7 +58,7 @@ export async function listFixedResponses(
   let query = supabase
     .from("sku_respuestas")
     .select(
-      "id,sku,respuesta,estado_respuesta,respuesta_fija,activo,telefono_runner,nombre_runner,ultima_respuesta_en,expires_at,area,marca_producto",
+      "id,sku,respuesta,estado_respuesta,respuesta_fija,activo,telefono_runner,nombre_runner,ultima_respuesta_en,expires_at,area,marca_producto,fijado_por,fijado_at,desfijado_por,desfijado_at",
     )
     .eq("respuesta_fija", true)
     .order("ultima_respuesta_en", { ascending: false })
@@ -145,7 +168,7 @@ export async function updateFixedResponse(
   supabase: SupabaseClient,
   id: string,
   updates: { activo?: boolean; respuesta?: string },
-  options?: { runnerTelefono?: string | null; allowAnyRunner?: boolean },
+  options?: { runnerTelefono?: string | null; allowAnyRunner?: boolean; desfijadoPor?: string | null },
 ) {
   let query = supabase.from("sku_respuestas").select("id,telefono_runner,respuesta_fija").eq("id", id)
 
@@ -163,7 +186,13 @@ export async function updateFixedResponse(
   const payload: Record<string, string | boolean> = {}
   if (updates.activo !== undefined) {
     payload.activo = Boolean(updates.activo)
-    if (!updates.activo) payload.respuesta_fija = false
+    if (!updates.activo) {
+      payload.respuesta_fija = false
+      if (options?.desfijadoPor) {
+        payload.desfijado_por = options.desfijadoPor
+        payload.desfijado_at = new Date().toISOString()
+      }
+    }
   }
   if (updates.respuesta !== undefined) {
     const clean = String(updates.respuesta || "").trim()
@@ -177,12 +206,25 @@ export async function updateFixedResponse(
     .update(payload)
     .eq("id", id)
     .select(
-      "id,sku,respuesta,estado_respuesta,respuesta_fija,activo,telefono_runner,nombre_runner,ultima_respuesta_en,expires_at,area,marca_producto",
+      "id,sku,respuesta,estado_respuesta,respuesta_fija,activo,telefono_runner,nombre_runner,ultima_respuesta_en,expires_at,area,marca_producto,fijado_por,fijado_at,desfijado_por,desfijado_at",
     )
     .single()
 
   if (error) throw error
   return data
+}
+
+export async function listRecentFixedResponseChanges(supabase: SupabaseClient, hours = 24) {
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString()
+  const { data, error } = await supabase
+    .from("sku_respuestas")
+    .select("sku,activo,fijado_at,desfijado_at,fijado_por,desfijado_por")
+    .or(`fijado_at.gte.${since},desfijado_at.gte.${since}`)
+    .order("desfijado_at", { ascending: false, nullsFirst: false })
+    .limit(50)
+
+  if (error) throw error
+  return data || []
 }
 
 export { insightFromProductRow }

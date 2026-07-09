@@ -2,22 +2,36 @@ import { NextResponse } from "next/server"
 import { getSupabaseAdmin } from "@/lib/supabase-admin"
 import { requireActiveAdmin } from "@/lib/runner-auth"
 
-export async function GET() {
+export async function GET(request: Request) {
   const { admin, reason } = await requireActiveAdmin()
 
   if (!admin) {
     return NextResponse.json({ error: "No autorizado.", reason }, { status: 401 })
   }
 
+  const { searchParams } = new URL(request.url)
+  const canalParam = searchParams.get("canal")
+
   const supabase = getSupabaseAdmin()
-  const { data, error } = await supabase
+  let query = supabase
     .from("consultas_sku")
     .select(
-      "id,sku,marca_producto,area,telefono_picker,estado,estado_respuesta,respuesta_runner,nombre_runner,responded_at,created_at,respuesta_fija",
+      "id,sku,marca_producto,area,telefono_picker,picker_nombre,estado,estado_respuesta,respuesta_runner,nombre_runner,responded_at,created_at,respuesta_fija,canal",
     )
     .in("estado", ["respondido", "no_disponible", "en_revision"])
     .order("responded_at", { ascending: false })
     .limit(200)
+
+  if (canalParam === "app" || canalParam === "whatsapp") {
+    query = query.eq("canal", canalParam)
+    if (canalParam === "app") {
+      query = query.or("archivada.is.null,archivada.eq.false")
+    } else {
+      query = query.eq("archivada", true)
+    }
+  }
+
+  const { data, error } = await query
 
   if (error) {
     console.error(error)

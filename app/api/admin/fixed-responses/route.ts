@@ -42,8 +42,29 @@ export async function PATCH(request: Request) {
         activo: activo !== undefined ? Boolean(activo) : undefined,
         respuesta: respuesta !== undefined ? String(respuesta) : undefined,
       },
-      { allowAnyRunner: true },
+      {
+        allowAnyRunner: true,
+        desfijadoPor: activo === false ? admin.nombre || admin.telefono : undefined,
+      },
     )
+
+    if (activo !== undefined) {
+      const isActive = Boolean(data.activo)
+      const sku = String(data.sku || "").trim().toUpperCase()
+      const { error: notifError } = await supabase.from("notificaciones_app").insert({
+        tipo: "respuesta_fija_cambiada",
+        titulo: `SKU ${sku} — ${isActive ? "Fijado sin stock" : "Stock repuesto"}`,
+        cuerpo: isActive
+          ? `El admin fijó "${sku}" como sin stock. Los pickers recibirán respuesta automática.`
+          : `El admin confirmó llegada de "${sku}". La respuesta automática fue desactivada.`,
+        rol_destino: "runner",
+        referencia_tipo: "sku_respuesta",
+        referencia_id: String(data.id),
+        metadata: { sku, activo: isActive, admin: admin.nombre || admin.telefono },
+        leida: false,
+      })
+      if (notifError) console.error("notificacion respuesta fija", notifError)
+    }
 
     return NextResponse.json({ ok: true, response: data })
   } catch (error) {

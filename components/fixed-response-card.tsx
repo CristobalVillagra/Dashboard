@@ -3,6 +3,7 @@
 import { useState, type ReactNode } from "react"
 import { ImagePlus } from "lucide-react"
 import type { FixedResponseRecord } from "@/lib/fixed-responses"
+import { fixedSinceIso, formatDaysSinceFixed } from "@/lib/fixed-responses"
 import { formatAreaLabel } from "@/lib/areas"
 import { ImageZoomModal } from "@/components/image-zoom-modal"
 
@@ -25,6 +26,8 @@ export function FixedResponseCard({
   response: FixedResponseRecord
   actions?: ReactNode
 }) {
+  const daysLabel = formatDaysSinceFixed(fixedSinceIso(response))
+
   return (
     <div className={`rounded-lg border border-[#d8e0ea] bg-white p-4 ${response.activo ? "" : "opacity-70"}`}>
       <div className="flex gap-3">
@@ -37,9 +40,16 @@ export function FixedResponseCard({
                 <p className="mt-1 text-sm font-medium text-[#476179]">{response.marca_producto}</p>
               )}
             </div>
-            <span className="shrink-0 rounded-md bg-[#fff1f0] px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-[#9b2c2c]">
-              Sin stock – fijado por runner
-            </span>
+            <div className="flex shrink-0 flex-col items-end gap-1">
+              <span className="rounded-md bg-[#fff1f0] px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-[#9b2c2c]">
+                Sin stock confirmado
+              </span>
+              {response.activo && daysLabel && (
+                <span className="rounded-md bg-[#fff8e7] px-2 py-0.5 text-xs font-semibold text-[#745015]">
+                  {daysLabel} sin confirmar llegada
+                </span>
+              )}
+            </div>
           </div>
 
           <p className="mt-1.5 text-xs text-[#5c6f82]">
@@ -51,7 +61,15 @@ export function FixedResponseCard({
             {response.nombre_runner && (
               <span className="rounded-md bg-[#f0f4f8] px-2 py-1">Runner: {response.nombre_runner}</span>
             )}
-            {response.ultima_respuesta_en && (
+            {response.fijado_por && (
+              <span className="rounded-md bg-[#f0f4f8] px-2 py-1">Fijado por: {response.fijado_por}</span>
+            )}
+            {response.fijado_at && (
+              <span className="rounded-md bg-[#f0f4f8] px-2 py-1">
+                Fijado: {formatRelativeDate(response.fijado_at)}
+              </span>
+            )}
+            {!response.fijado_at && response.ultima_respuesta_en && (
               <span className="rounded-md bg-[#f0f4f8] px-2 py-1">
                 Fijado: {formatRelativeDate(response.ultima_respuesta_en)}
               </span>

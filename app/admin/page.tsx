@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import { endOfWeek, format, startOfWeek } from "date-fns"
-import { AlertCircle, CheckCircle2, ImagePlus, LogOut, RefreshCw, Search, ShieldCheck } from "lucide-react"
+import { AlertCircle, CheckCircle2, ImagePlus, LogOut, MessageCircle, RefreshCw, Search, ShieldCheck } from "lucide-react"
 import { BrandFooter, BrandLogo } from "@/components/brand-logo"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -11,9 +11,16 @@ import { FixedResponseCard } from "@/components/fixed-response-card"
 import { FixedResponseManager } from "@/components/fixed-response-manager"
 import { ImageZoomModal } from "@/components/image-zoom-modal"
 import { QuerySortControls } from "@/components/query-sort-controls"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import type { FixedResponseRecord } from "@/lib/fixed-responses"
 import { formatAreaLabel } from "@/lib/areas"
-import { groupConsultasBySku, sortQueryGroups, type QuerySortMode } from "@/lib/query-groups"
+import type { QuerySortMode } from "@/lib/query-groups"
 
 type AdminUser = {
   telefono: string
@@ -55,11 +62,80 @@ type AdminQuery = {
   marca_producto: string | null
   area: string | null
   telefono_picker: string | null
+  picker_nombre: string | null
   estado: string
+  estado_respuesta: string | null
   respuesta_runner: string | null
   nombre_runner: string | null
   created_at: string | null
   responded_at: string | null
+  canal?: string | null
+}
+
+type AdminChatMessage = {
+  id: number
+  rol_emisor: string
+  nombre: string | null
+  contenido: string | null
+  created_at: string
+}
+
+function formatCreatedAtChile(iso: string | null) {
+  if (!iso) return "—"
+  return new Date(iso).toLocaleString("es-CL", {
+    timeZone: "America/Santiago",
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })
+}
+
+function formatResponseTime(createdAt: string | null, respondedAt: string | null) {
+  if (!createdAt || !respondedAt) return "Sin respuesta"
+  const diffMs = new Date(respondedAt).getTime() - new Date(createdAt).getTime()
+  if (diffMs < 0) return "Sin respuesta"
+  const totalSec = Math.floor(diffMs / 1000)
+  const min = Math.floor(totalSec / 60)
+  const sec = totalSec % 60
+  return `${min}m ${sec}s`
+}
+
+function clasificacionBadge(estadoRespuesta: string | null) {
+  if (estadoRespuesta === "disponible") {
+    return { label: "Disponible", className: "bg-[#e7f5ee] text-[#1f6a4f]" }
+  }
+  if (estadoRespuesta === "no_disponible") {
+    return { label: "No disponible", className: "bg-[#fff1f0] text-[#9b2c2c]" }
+  }
+  if (estadoRespuesta === "ir_a_revisar") {
+    return { label: "Ir a revisar", className: "bg-[#fff8e6] text-[#9a6b00]" }
+  }
+  return { label: "Sin clasificar", className: "bg-[#f0f4f8] text-[#5c6f82]" }
+}
+
+function sortAdminQueries(queries: AdminQuery[], mode: QuerySortMode): AdminQuery[] {
+  const copy = [...queries]
+  if (mode === "oldest") {
+    return copy.sort(
+      (a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime(),
+    )
+  }
+  if (mode === "skuCount") {
+    const skuCounts = new Map<string, number>()
+    for (const query of copy) {
+      skuCounts.set(query.sku, (skuCounts.get(query.sku) || 0) + 1)
+    }
+    return copy.sort((a, b) => {
+      const countDiff = (skuCounts.get(b.sku) || 0) - (skuCounts.get(a.sku) || 0)
+      if (countDiff !== 0) return countDiff
+      return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+    })
+  }
+  return copy.sort(
+    (a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime(),
+  )
 }
 
 type Product = {
@@ -126,9 +202,13 @@ export default function AdminPage() {
   const [filtroTipo, setFiltroTipo] = useState<string | null>(null)
   const [approvalAreas, setApprovalAreas] = useState<Record<string, string>>({})
   const [querySortMode, setQuerySortMode] = useState<QuerySortMode>("newest")
+  const [queryChannelTab, setQueryChannelTab] = useState<"app" | "whatsapp">("app")
   const [queryDesde, setQueryDesde] = useState(() => getCurrentWeekRange().desde)
   const [queryHasta, setQueryHasta] = useState(() => getCurrentWeekRange().hasta)
   const [exportingQueries, setExportingQueries] = useState(false)
+  const [chatQuery, setChatQuery] = useState<AdminQuery | null>(null)
+  const [chatMessages, setChatMessages] = useState<AdminChatMessage[]>([])
+  const [loadingChat, setLoadingChat] = useState(false)
   const [newUser, setNewUser] = useState({
     telefono: "",
     nombre: "",
@@ -164,18 +244,10 @@ export default function AdminPage() {
     )
   }, [products, productSearch, productView])
 
-  const visibleQueryGroups = useMemo(() => {
-    const rows = adminQueries.map((query) => ({
-      id: query.id,
-      sku: query.sku,
-      marca_producto: query.marca_producto,
-      area: query.area,
-      telefono_picker: query.telefono_picker,
-      mensaje_original: query.respuesta_runner,
-      created_at: query.created_at || query.responded_at,
-    }))
-    return sortQueryGroups(groupConsultasBySku(rows), querySortMode)
-  }, [adminQueries, querySortMode])
+  const visibleQueries = useMemo(
+    () => sortAdminQueries(adminQueries, querySortMode),
+    [adminQueries, querySortMode],
+  )
 
   async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
     const response = await fetch(url, {
@@ -220,8 +292,26 @@ export default function AdminPage() {
   }, [admin, tab, demandedDays])
 
   useEffect(() => {
+    if (admin && tab === "queries") loadTab("queries")
+  }, [admin, tab, queryChannelTab])
+
+  useEffect(() => {
     if (admin && tab === "backups") loadTab("backups")
   }, [admin, tab, backupEstado])
+
+  async function openConversation(query: AdminQuery) {
+    setChatQuery(query)
+    setChatMessages([])
+    setLoadingChat(true)
+    try {
+      const data = await fetchJson<{ messages: AdminChatMessage[] }>(`/api/queries/${query.id}/messages`)
+      setChatMessages(data.messages)
+    } catch (currentError) {
+      setError(currentError instanceof Error ? currentError.message : "No se pudo cargar la conversacion.")
+    } finally {
+      setLoadingChat(false)
+    }
+  }
 
   async function loadTab(current: Tab) {
     setLoading(true)
@@ -232,7 +322,7 @@ export default function AdminPage() {
         setUsers(data.users)
         setPendingUsers(data.users.filter((user) => user.estado_usuario === "pendiente_aprobacion"))
       } else if (current === "queries") {
-        const data = await fetchJson<{ queries: AdminQuery[] }>("/api/admin/queries")
+        const data = await fetchJson<{ queries: AdminQuery[] }>(`/api/admin/queries?canal=${queryChannelTab}`)
         setAdminQueries(data.queries)
       } else if (current === "demanded") {
         const data = await fetchJson<{ products: DemandedProduct[] }>(`/api/admin/demanded-products?days=${demandedDays}`)
@@ -504,6 +594,19 @@ export default function AdminPage() {
 
     if (removedItem) {
       setFixedResponses((prev) => prev.filter((r) => r.id !== payload.id))
+      setProducts((prev) =>
+        prev.map((product) =>
+          product.sku === removedItem.sku
+            ? {
+                ...product,
+                fixed_respuesta: null,
+                fixed_activo: false,
+                fixed_runner: null,
+                fixed_estado: null,
+              }
+            : product,
+        ),
+      )
     }
 
     try {
@@ -533,7 +636,7 @@ export default function AdminPage() {
 
   if (!admin) {
     return (
-      <main className="min-h-screen bg-[#f5f7fb] px-4 py-5 text-[#142033]">
+        <main className="min-h-screen bg-[#f5f8fa] px-4 py-5 text-[#142033]">
         <section className="mx-auto flex min-h-[calc(100vh-40px)] w-full max-w-md flex-col justify-center">
           <div className="mb-6 flex flex-col items-start gap-2">
             <BrandLogo height={32} width={130} />
@@ -542,7 +645,7 @@ export default function AdminPage() {
               <p className="text-sm text-[#5c6f82]">Acceso restringido</p>
             </div>
           </div>
-          <div className="rounded-lg border border-[#d8e0ea] bg-white p-5 shadow-sm">
+          <div className="rounded-xl border border-[#dce8f0] bg-white p-5 shadow-sm">
             <div className="space-y-4">
               <div className="space-y-2">
                 <Label>Celular admin</Label>
@@ -575,8 +678,8 @@ export default function AdminPage() {
   }
 
   return (
-    <main className="min-h-screen bg-[#f5f7fb] text-[#142033]">
-      <header className="border-b border-[#dce4ee] bg-white px-4 py-3 sm:px-6">
+    <main className="min-h-screen bg-[#f5f8fa] text-[#142033]">
+      <header className="border-b border-[#dce8f0] bg-white px-4 py-3 shadow-sm sm:px-6">
         <div className="mx-auto flex max-w-6xl items-center justify-between">
           <div className="flex items-center gap-3">
             <BrandLogo height={24} width={90} />
@@ -624,7 +727,7 @@ export default function AdminPage() {
 
         {tab === "users" && (
           <div className="mt-4 space-y-4">
-            <div className="rounded-lg border border-[#d8e0ea] bg-white p-4">
+            <div className="rounded-xl border border-[#dce8f0] bg-white p-4 shadow-sm">
               <h3 className="font-semibold">Crear usuario autorizado</h3>
               <p className="mt-1 text-sm text-[#5c6f82]">
                 Runners y admins reciben el OTP por SMS. Pickers ingresan desde <strong>/picker</strong>.
@@ -671,7 +774,7 @@ export default function AdminPage() {
               const isPicker = user.rol === "picker"
               const selectedArea = approvalAreas[user.telefono] || "frio"
               return (
-                <div key={user.telefono} className="rounded-lg border border-[#d8e0ea] bg-white p-4">
+                <div key={user.telefono} className="rounded-xl border border-[#dce8f0] bg-white p-4 shadow-sm">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
                       <p className="font-semibold text-[#142033]">{user.nombre}</p>
@@ -714,7 +817,7 @@ export default function AdminPage() {
               )
             })}
 
-            <div className="rounded-lg border border-[#d8e0ea] bg-white p-4">
+            <div className="rounded-xl border border-[#dce8f0] bg-white p-4 shadow-sm">
               <h3 className="font-semibold">Usuarios registrados</h3>
               <div className="mt-3 overflow-x-auto">
                 <table className="w-full min-w-[620px] text-left text-sm">
@@ -740,7 +843,7 @@ export default function AdminPage() {
 
         {tab === "queries" && (
           <div className="mt-4 space-y-4">
-            <div className="rounded-lg border border-[#d8e0ea] bg-white p-4">
+            <div className="rounded-xl border border-[#dce8f0] bg-white p-4 shadow-sm">
               <h3 className="font-semibold">Exportar consultas</h3>
               <p className="mt-1 text-sm leading-6 text-[#5c6f82]">
                 Descarga el historial de consultas respondidas en el rango seleccionado. Por defecto se usa la semana
@@ -774,45 +877,73 @@ export default function AdminPage() {
                 {exportingQueries ? "Exportando..." : "Exportar a Excel"}
               </Button>
             </div>
-            <div className="rounded-lg border border-[#d8e0ea] bg-white p-4">
+            <div className="rounded-xl border border-[#dce8f0] bg-white p-4 shadow-sm">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h3 className="font-semibold">Historial de consultas</h3>
                   <p className="mt-1 text-sm text-[#5c6f82]">
-                    Consultas respondidas cargadas en memoria. El ordenamiento se aplica en el navegador.
+                    Consultas respondidas por canal. El ordenamiento se aplica en el navegador.
                   </p>
                 </div>
                 <div className="w-full sm:max-w-xl">
                   <QuerySortControls value={querySortMode} onChange={setQuerySortMode} />
                 </div>
               </div>
-              <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                {visibleQueryGroups.map((group) => (
-                  <div key={`${group.sku}-${group.area}-${group.marcaProducto}`} className="rounded-lg border border-[#d8e0ea] bg-[#f7f9fc] p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="font-semibold break-all">SKU {group.sku}</p>
-                        {group.marcaProducto && (
-                          <p className="mt-1 text-sm font-medium text-[#476179]">{group.marcaProducto}</p>
-                        )}
-                      </div>
-                      <span className="shrink-0 rounded-md bg-[#e7f5ee] px-2.5 py-1 text-sm font-semibold text-[#1f6a4f]">
-                        {group.total}
-                      </span>
-                    </div>
-                    <div className="mt-2 flex flex-wrap gap-2 text-xs text-[#476179]">
-                      <span className="rounded-md bg-white px-2 py-1">{formatAreaLabel(group.area)}</span>
-                      <span className="rounded-md bg-white px-2 py-1">{group.pickers.length} picker(s)</span>
-                    </div>
-                    {group.sampleMessage && (
-                      <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-[#5c6f82]">
-                        {group.sampleMessage}
-                      </p>
-                    )}
-                  </div>
-                ))}
+              <div className="mt-4 grid grid-cols-2 rounded-md border border-[#cfd9e5] bg-[#f7f9fc] p-1 text-sm">
+                <TabButton active={queryChannelTab === "app"} onClick={() => setQueryChannelTab("app")}>
+                  Consultas App
+                </TabButton>
+                <TabButton active={queryChannelTab === "whatsapp"} onClick={() => setQueryChannelTab("whatsapp")}>
+                  Historial WhatsApp
+                </TabButton>
               </div>
-              {!loading && visibleQueryGroups.length === 0 && (
+              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                {visibleQueries.map((query) => {
+                  const badge = clasificacionBadge(query.estado_respuesta)
+                  const pickerLabel = query.picker_nombre || query.telefono_picker || "—"
+                  const responseTime = formatResponseTime(query.created_at, query.responded_at)
+
+                  return (
+                    <div key={query.id} className="rounded-xl border border-[#dce8f0] bg-[#f0f4f8] p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="font-semibold break-all">SKU {query.sku}</p>
+                          <p className="mt-1 text-sm text-[#476179]">{formatAreaLabel(query.area)}</p>
+                          {query.marca_producto && (
+                            <p className="mt-1 text-sm font-medium text-[#476179]">{query.marca_producto}</p>
+                          )}
+                        </div>
+                        <span className={`shrink-0 rounded-md px-2.5 py-1 text-xs font-semibold ${badge.className}`}>
+                          {badge.label}
+                        </span>
+                      </div>
+                      <div className="mt-3 space-y-1 text-sm text-[#5c6f82]">
+                        <p>
+                          <span className="font-medium text-[#142033]">Picker:</span> {pickerLabel}
+                        </p>
+                        <p>
+                          <span className="font-medium text-[#142033]">Creada:</span>{" "}
+                          {formatCreatedAtChile(query.created_at)}
+                        </p>
+                        <p>
+                          <span className="font-medium text-[#142033]">Tiempo respuesta:</span> {responseTime}
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="mt-3"
+                        onClick={() => openConversation(query)}
+                      >
+                        <MessageCircle className="size-3.5" />
+                        Ver conversación
+                      </Button>
+                    </div>
+                  )
+                })}
+              </div>
+              {!loading && visibleQueries.length === 0 && (
                 <Empty text="No hay consultas respondidas para mostrar." />
               )}
             </div>
@@ -821,7 +952,7 @@ export default function AdminPage() {
 
         {tab === "demanded" && (
           <div className="mt-4 space-y-4">
-            <div className="rounded-lg border border-[#d8e0ea] bg-white p-4">
+            <div className="rounded-xl border border-[#dce8f0] bg-white p-4 shadow-sm">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h3 className="font-semibold">Productos mas demandados</h3>
@@ -852,7 +983,7 @@ export default function AdminPage() {
                   const urgent = percentage > 30
 
                   return (
-                    <div key={product.sku} className="rounded-lg border border-[#d8e0ea] bg-white p-4">
+                    <div key={product.sku} className="rounded-xl border border-[#dce8f0] bg-white p-4 shadow-sm">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <p className="text-xs font-semibold uppercase text-[#6b7c8f]">SKU</p>
@@ -900,7 +1031,7 @@ export default function AdminPage() {
 
         {tab === "products" && (
           <div className="mt-4 space-y-4">
-            <div className="rounded-lg border border-[#d8e0ea] bg-white p-4">
+            <div className="rounded-xl border border-[#dce8f0] bg-white p-4 shadow-sm">
               <h3 className="font-semibold">Nuevo producto</h3>
               <div className="mt-3 grid gap-2 sm:grid-cols-2">
                 <Input placeholder="SKU" value={newProduct.sku} onChange={(e) => setNewProduct({ ...newProduct, sku: e.target.value })} />
@@ -931,7 +1062,7 @@ export default function AdminPage() {
                 Guardar producto
               </Button>
             </div>
-            <div className="rounded-lg border border-[#d8e0ea] bg-white p-4">
+            <div className="rounded-xl border border-[#dce8f0] bg-white p-4 shadow-sm">
               <h3 className="font-semibold">Catalogo de productos</h3>
               <div className="mt-3 grid grid-cols-2 rounded-md border border-[#cfd9e5] bg-[#f7f9fc] p-1 text-sm">
                 <TabButton active={productView === "catalogo"} onClick={() => setProductView("catalogo")}>
@@ -986,7 +1117,7 @@ export default function AdminPage() {
         {tab === "backups" && (
           <div className="mt-4 space-y-4">
             {/* Buscador por SG */}
-            <div className="rounded-lg border border-[#d8e0ea] bg-white p-4">
+            <div className="rounded-xl border border-[#dce8f0] bg-white p-4 shadow-sm">
               <h3 className="font-semibold">Buscar por SG</h3>
               <div className="mt-3 flex flex-wrap gap-2">
                 {["Uber", "Pickup", "Driver", "Bicci"].map((tipo) => (
@@ -1114,6 +1245,111 @@ export default function AdminPage() {
           </div>
         )}
       </section>
+
+      <Dialog
+        open={Boolean(chatQuery)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setChatQuery(null)
+            setChatMessages([])
+          }
+        }}
+      >
+        <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-lg">
+          <DialogHeader className="shrink-0">
+            <DialogTitle className="flex flex-wrap items-center gap-2 text-sm">
+              <span>SKU {chatQuery?.sku}</span>
+              {chatQuery && (
+                <span
+                  className={`rounded-md px-2 py-0.5 text-xs font-semibold ${
+                    clasificacionBadge(chatQuery.estado_respuesta).className
+                  }`}
+                >
+                  {clasificacionBadge(chatQuery.estado_respuesta).label}
+                </span>
+              )}
+            </DialogTitle>
+            <DialogDescription className="text-xs text-[#8ba3b8]">
+              {chatQuery && (
+                <>
+                  {formatAreaLabel(chatQuery.area)} — Tiempo respuesta:{" "}
+                  {formatResponseTime(chatQuery.created_at, chatQuery.responded_at)}
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto py-2">
+            {loadingChat && (
+              <div className="flex justify-center py-6">
+                <RefreshCw className="size-4 animate-spin text-[#1f7a5b]" />
+              </div>
+            )}
+
+            {!loadingChat && chatMessages.length === 0 && (
+              <p className="py-6 text-center text-xs text-[#8ba3b8]">Sin mensajes en este chat.</p>
+            )}
+
+            {chatMessages.map((m) => {
+              const isRunner = m.rol_emisor === "runner"
+              const isSistema = m.rol_emisor === "sistema"
+
+              if (isSistema) {
+                return (
+                  <div key={m.id} className="flex justify-center">
+                    <p className="rounded-full bg-[#f0f4f8] px-3 py-1 text-center text-[10px] text-[#5c6f82]">
+                      {m.contenido}
+                    </p>
+                  </div>
+                )
+              }
+
+              return (
+                <div key={m.id} className={`flex ${isRunner ? "justify-end" : "justify-start"}`}>
+                  <div
+                    className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm ${
+                      isRunner
+                        ? "rounded-br-sm bg-[#1f7a5b] text-white"
+                        : "rounded-bl-sm bg-[#f0f4f8] text-[#142033]"
+                    }`}
+                  >
+                    {!isRunner && m.nombre && (
+                      <p className="mb-0.5 text-[10px] font-semibold text-[#5c6f82]">{m.nombre}</p>
+                    )}
+                    <p className="whitespace-pre-wrap leading-snug">{m.contenido}</p>
+                    <p className={`mt-0.5 text-right text-[9px] ${isRunner ? "text-white/60" : "text-[#8ba3b8]"}`}>
+                      {new Date(m.created_at).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })}
+                    </p>
+                  </div>
+                </div>
+              )
+            })}
+
+            {!loadingChat &&
+              chatQuery?.respuesta_runner &&
+              !chatMessages.find((m) => m.rol_emisor === "runner") && (
+                <div className="flex justify-end">
+                  <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-[#1f7a5b] px-3 py-2 text-sm text-white">
+                    <p className="whitespace-pre-wrap leading-snug">{chatQuery.respuesta_runner}</p>
+                  </div>
+                </div>
+              )}
+          </div>
+
+          {chatQuery && (
+            <div className="shrink-0 border-t border-[#dce8f0] pt-3 text-xs text-[#5c6f82]">
+              <p>
+                <span className="font-medium text-[#142033]">Estado:</span> {chatQuery.estado}
+              </p>
+              {chatQuery.nombre_runner && (
+                <p className="mt-1">
+                  <span className="font-medium text-[#142033]">Runner:</span> {chatQuery.nombre_runner}
+                </p>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </main>
   )
 }
@@ -1209,7 +1445,7 @@ function ProductEditor({
   const [saving, setSaving] = useState(false)
 
   return (
-    <div className="rounded-lg border border-[#d8e0ea] bg-white p-4 text-sm">
+    <div className="rounded-xl border border-[#dce8f0] bg-white p-4 text-sm shadow-sm">
       <div className="flex flex-col gap-3 sm:flex-row">
         <ProductThumb url={product.imagen_url} alt={product.nombre_producto || product.sku} />
         <div className="min-w-0 flex-1">
@@ -1399,7 +1635,7 @@ function Success({ text }: { text: string }) {
 
 function Empty({ text }: { text: string }) {
   return (
-    <div className="rounded-lg border border-[#d8e0ea] bg-white p-8 text-center text-sm text-[#5c6f82]">
+    <div className="rounded-xl border border-[#dce8f0] bg-white p-8 text-center text-sm text-[#5c6f82] shadow-sm">
       {text}
     </div>
   )
@@ -1422,8 +1658,8 @@ function CenteredMessage({
   spin?: boolean
 }) {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[#f5f7fb] px-4">
-      <div className="flex items-center gap-3 rounded-lg border bg-white px-4 py-3 shadow-sm">
+    <main className="flex min-h-screen items-center justify-center bg-[#f5f8fa] px-4">
+      <div className="flex items-center gap-3 rounded-xl border border-[#dce8f0] bg-white px-4 py-3 shadow-sm">
         <Icon className={`size-5 text-[#1f7a5b] ${spin ? "animate-spin" : ""}`} />
         <span className="text-sm font-medium">{text}</span>
       </div>
@@ -1450,7 +1686,7 @@ function BackupCard({
   const decided = b.estado === "revisado" || b.estado === "rechazado"
 
   return (
-    <div className="rounded-lg border border-[#d8e0ea] bg-white p-4">
+    <div className="rounded-xl border border-[#dce8f0] bg-white p-4 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="space-y-1">
           <div className="flex flex-wrap items-center gap-2">

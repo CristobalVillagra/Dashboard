@@ -35,6 +35,7 @@ import { FixedResponseCard } from "@/components/fixed-response-card"
 import { FixedResponseManager } from "@/components/fixed-response-manager"
 import { ImageZoomModal } from "@/components/image-zoom-modal"
 import type { FixedResponseRecord } from "@/lib/fixed-responses"
+import { formatDaysSinceFixed } from "@/lib/fixed-responses"
 import { BrandFooter, BrandLogo } from "@/components/brand-logo"
 import {
   Dialog,
@@ -106,6 +107,15 @@ export default function RunnerHome() {
   const [metrics, setMetrics] = useState<Metrics>(emptyMetrics)
   const [groups, setGroups] = useState<QueryGroupView[]>([])
   const [fixedResponses, setFixedResponses] = useState<FixedResponseRecord[]>([])
+  const [respuestasFijasRecientes, setRespuestasFijasRecientes] = useState<
+    Array<{
+      sku: string
+      activo: boolean
+      fijado_at: string | null
+      desfijado_at: string | null
+      fijado_por: string | null
+    }>
+  >([])
   const [sortMode, setSortMode] = useState<QuerySortMode>("newest")
   const [availableAreaParam, setAvailableAreaParam] = useState("")
   const [availableAreas, setAvailableAreas] = useState<string[]>([])
@@ -149,8 +159,18 @@ export default function RunnerHome() {
 
     try {
       if (tab === "fixed") {
-        const data = await fetchJson<{ responses: FixedResponseRecord[] }>("/api/queries/fixed-responses")
+        const data = await fetchJson<{
+          responses: FixedResponseRecord[]
+          recientes?: Array<{
+            sku: string
+            activo: boolean
+            fijado_at: string | null
+            desfijado_at: string | null
+            fijado_por: string | null
+          }>
+        }>("/api/queries/fixed-responses")
         setFixedResponses(data.responses)
+        setRespuestasFijasRecientes(data.recientes || [])
         return
       }
 
@@ -170,6 +190,7 @@ export default function RunnerHome() {
     } catch (currentError) {
       if (tab === "fixed") {
         setFixedResponses([])
+        setRespuestasFijasRecientes([])
       } else {
         setRunner(null)
         setGroups([])
@@ -471,8 +492,8 @@ export default function RunnerHome() {
 
   if (checkingSession) {
     return (
-      <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-[#f5f7fb] px-4 text-[#142033]">
-        <div className="flex items-center gap-3 rounded-lg border border-[#d9e2ef] bg-white px-4 py-3 shadow-sm">
+      <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-[#f5f8fa] px-4 text-[#142033]">
+        <div className="flex items-center gap-3 rounded-xl border border-[#dce8f0] bg-white px-4 py-3 shadow-sm">
           <RefreshCw className="size-5 animate-spin text-[#1f7a5b]" />
           <span className="text-sm font-medium">Cargando usuario...</span>
         </div>
@@ -483,7 +504,7 @@ export default function RunnerHome() {
 
   if (!runner) {
     return (
-      <main className="min-h-screen bg-[#f5f7fb] px-4 py-5 text-[#142033] sm:px-6">
+      <main className="min-h-screen bg-[#f5f8fa] px-4 py-5 text-[#142033] sm:px-6">
         <section className="mx-auto flex min-h-[calc(100vh-40px)] w-full max-w-md flex-col justify-center">
           <div className="mb-8 flex flex-col items-start gap-3">
             <BrandLogo height={32} width={130} />
@@ -493,7 +514,7 @@ export default function RunnerHome() {
             </div>
           </div>
 
-          <div className="rounded-lg border border-[#d8e0ea] bg-white p-5 shadow-sm">
+          <div className="rounded-xl border border-[#dce8f0] bg-white p-5 shadow-sm">
             <div className="mb-5">
               <h2 className="text-xl font-semibold">Ingreso por OTP</h2>
               <p className="mt-2 text-sm leading-6 text-[#5c6f82]">
@@ -622,8 +643,8 @@ export default function RunnerHome() {
   }
 
   return (
-    <main className="min-h-screen overflow-x-hidden bg-[#f5f7fb] text-[#142033]">
-      <header className="sticky top-0 z-20 border-b border-[#dce4ee] bg-white/95 px-3 py-2 backdrop-blur sm:px-6 sm:py-3">
+    <main className="min-h-screen overflow-x-hidden bg-[#f5f8fa] text-[#142033]">
+      <header className="sticky top-0 z-20 border-b border-[#dce8f0] bg-white px-3 py-2 shadow-sm sm:px-6 sm:py-3">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
           <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-wide text-[#1f7a5b]">Panel de runner</p>
@@ -676,7 +697,7 @@ export default function RunnerHome() {
         </div>
 
         {viewTab !== "fixed" && (
-          <div className="mt-4 flex flex-col gap-3 rounded-lg border border-[#d8e0ea] bg-white p-3 shadow-sm sm:mt-5 sm:flex-row sm:items-center sm:justify-between sm:p-4">
+          <div className="mt-4 flex flex-col gap-3 rounded-xl border border-[#dce8f0] bg-white p-3 shadow-sm sm:mt-5 sm:flex-row sm:items-center sm:justify-between sm:p-4">
             <div className="min-w-0">
               <h2 className="text-lg font-semibold">
                 {viewTab === "available" ? "Solicitudes disponibles" : "Mis solicitudes"}
@@ -692,7 +713,7 @@ export default function RunnerHome() {
         )}
 
         {viewTab === "fixed" && (
-          <div className="mt-4 rounded-lg border border-[#d8e0ea] bg-white p-3 shadow-sm sm:p-4">
+          <div className="mt-4 rounded-xl border border-[#dce8f0] bg-white p-3 shadow-sm sm:p-4">
             <h2 className="text-lg font-semibold">Respuestas fijas</h2>
             <p className="mt-1 text-sm text-[#5c6f82]">
               Respuestas permanentes que no expiran en la limpieza diaria. Referencia completa para consulta.
@@ -712,7 +733,7 @@ export default function RunnerHome() {
         )}
 
         {viewTab === "available" && (
-          <div className="mt-3 rounded-lg border border-[#d8e0ea] bg-white p-3 sm:p-4">
+          <div className="mt-3 rounded-xl border border-[#dce8f0] bg-white p-3 sm:p-4">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <Label htmlFor="available-area">Area</Label>
@@ -754,7 +775,7 @@ export default function RunnerHome() {
             {visibleGroups.map((group) => (
             <div
               key={`${viewTab}-${group.sku}-${group.area}-${group.consultaIds.join("-")}`}
-              className="min-w-0 rounded-lg border border-[#d8e0ea] bg-white p-3 shadow-sm sm:p-4"
+              className="min-w-0 rounded-xl border border-[#dce8f0] bg-white p-3 shadow-sm sm:p-4"
             >
               <div className="flex gap-3">
                 <ProductImage url={group.imagenUrl} alt={group.nombreProducto || group.marcaProducto || group.sku} />
@@ -830,7 +851,7 @@ export default function RunnerHome() {
             {sessionRespondidas.map((consulta) => (
               <div
                 key={consulta.id}
-                className="min-w-0 rounded-lg border border-[#d8e0ea] bg-white p-3 shadow-sm sm:p-4"
+                className="min-w-0 rounded-xl border border-[#dce8f0] bg-white p-3 shadow-sm sm:p-4"
               >
                 <div className="flex gap-3">
                   <ProductImage url={consulta.imagenUrl} alt={consulta.nombreProducto || consulta.marcaProducto || consulta.sku} />
@@ -905,7 +926,27 @@ export default function RunnerHome() {
         )}
 
         {viewTab === "fixed" && (
-          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+          <div className="mt-4">
+            {respuestasFijasRecientes.length > 0 && (
+              <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                <p className="text-xs font-medium text-amber-800">
+                  ⚠️ Cambios recientes en productos sin stock
+                </p>
+                {respuestasFijasRecientes.map((r) => {
+                  const daysLabel = formatDaysSinceFixed(r.fijado_at || r.desfijado_at)
+                  return (
+                  <p key={r.sku} className="mt-1 text-xs text-amber-700">
+                    • <strong>{r.sku}</strong> —{" "}
+                    {r.activo
+                      ? `Sin stock${daysLabel ? ` (${daysLabel})` : ""}`
+                      : "Stock repuesto"}{" "}
+                    — Fijado por {r.fijado_por || "runner"}
+                  </p>
+                  )
+                })}
+              </div>
+            )}
+            <div className="grid gap-3 lg:grid-cols-2">
             {fixedResponses.map((response) => (
               <FixedResponseCard
                 key={response.id}
@@ -921,11 +962,12 @@ export default function RunnerHome() {
                 }
               />
             ))}
+            </div>
           </div>
         )}
 
         {!loadingData && viewTab === "fixed" && fixedResponses.length === 0 && (
-          <div className="mt-4 rounded-lg border border-[#d8e0ea] bg-white p-8 text-center shadow-sm">
+          <div className="mt-4 rounded-xl border border-[#dce8f0] bg-white p-8 text-center shadow-sm">
             <CheckCircle2 className="mx-auto size-10 text-[#1f7a5b]" />
             <h3 className="mt-3 text-lg font-semibold">No hay respuestas fijas</h3>
             <p className="mt-1 text-sm text-[#5c6f82]">
@@ -935,7 +977,7 @@ export default function RunnerHome() {
         )}
 
         {!loadingData && viewTab !== "fixed" && showEmptyState && (
-          <div className="mt-4 rounded-lg border border-[#d8e0ea] bg-white p-8 text-center shadow-sm">
+          <div className="mt-4 rounded-xl border border-[#dce8f0] bg-white p-8 text-center shadow-sm">
             <CheckCircle2 className="mx-auto size-10 text-[#1f7a5b]" />
             <h3 className="mt-3 text-lg font-semibold">
               {viewTab === "available"
@@ -1235,7 +1277,7 @@ function MetricCard({
   detail?: string
 }) {
   return (
-    <div className="min-w-0 rounded-lg border border-[#d8e0ea] bg-white p-3 shadow-sm sm:p-4">
+    <div className="min-w-0 rounded-xl border border-[#dce8f0] bg-white p-3 shadow-sm sm:p-4">
       <div className="flex items-center justify-between gap-3">
         <p className="min-w-0 text-xs font-medium leading-tight text-[#5c6f82] sm:text-sm">{label}</p>
         <Icon className="size-4 shrink-0 text-[#1f7a5b] sm:size-5" />

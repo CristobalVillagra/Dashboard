@@ -139,17 +139,38 @@ export async function POST(request: Request) {
         .single()
 
       if (!autoError && autoData) {
-        // Insertar mensaje automático en el chat
-        await supabase.from("consulta_sku_mensajes").insert({
-          consulta_id: autoData.id,
-          autor_rol:   "sistema",
-          autor_nombre: "Respuesta automática",
-          mensaje:      fixedResp.respuesta,
-          rol_emisor:  "sistema",
-          telefono:    fixedResp.telefono_runner || "",
-          nombre:      fixedResp.nombre_runner || "Sistema",
-          contenido:   fixedResp.respuesta,
-        })
+        await supabase.from("consulta_sku_mensajes").insert([
+          {
+            consulta_id: autoData.id,
+            autor_rol: "picker",
+            autor_nombre: picker.nombre,
+            mensaje: autoMensaje,
+            rol_emisor: "picker",
+            telefono: picker.telefono,
+            nombre: picker.nombre,
+            contenido: autoMensaje,
+          },
+          {
+            consulta_id: autoData.id,
+            autor_rol: "system",
+            autor_nombre: "Respuesta automática",
+            mensaje: fixedResp.respuesta,
+            rol_emisor: "sistema",
+            telefono: fixedResp.telefono_runner || "",
+            nombre: fixedResp.nombre_runner || "Sistema",
+            contenido: fixedResp.respuesta,
+          },
+          {
+            consulta_id: autoData.id,
+            autor_rol: "runner",
+            autor_nombre: fixedResp.nombre_runner || "Sistema",
+            mensaje: fixedResp.respuesta,
+            rol_emisor: "runner",
+            telefono: fixedResp.telefono_runner || "",
+            nombre: fixedResp.nombre_runner || "Sistema",
+            contenido: fixedResp.respuesta,
+          },
+        ])
       }
 
       return NextResponse.json({

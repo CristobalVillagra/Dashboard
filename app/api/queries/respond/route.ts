@@ -117,23 +117,25 @@ export async function POST(request: Request) {
 
     // Upsert en sku_respuestas
     if (cleanEstado !== "ir_a_revisar") {
-      const { error: answerError } = await supabase.from("sku_respuestas").upsert(
-        {
-          sku: cleanSku,
-          marca_producto: responseBrand,
-          area: responseArea,
-          respuesta: responseText,
-          activo: true,
-          respuesta_fija: isFixed,
-          estado_respuesta: cleanEstado === "no_disponible" ? "no_disponible" : "disponible",
-          expires_at: isFixed ? null : new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
-          telefono_runner: runner.telefono,
-          nombre_runner: runner.nombre,
-          ultima_respuesta_en: now,
-          local_id: firstAssigned?.local_id || runner.localId || null,
-        },
-        { onConflict: "sku" },
-      )
+      const upsertPayload: Record<string, string | boolean | null> = {
+        sku: cleanSku,
+        marca_producto: responseBrand,
+        area: responseArea,
+        respuesta: responseText,
+        activo: true,
+        respuesta_fija: isFixed,
+        estado_respuesta: cleanEstado === "no_disponible" ? "no_disponible" : "disponible",
+        expires_at: isFixed ? null : new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
+        telefono_runner: runner.telefono,
+        nombre_runner: runner.nombre,
+        ultima_respuesta_en: now,
+        local_id: firstAssigned?.local_id || runner.localId || null,
+      }
+      if (isFixed) {
+        upsertPayload.fijado_por = runner.nombre || runner.telefono
+        upsertPayload.fijado_at = now
+      }
+      const { error: answerError } = await supabase.from("sku_respuestas").upsert(upsertPayload, { onConflict: "sku" })
       if (answerError) throw answerError
     }
 

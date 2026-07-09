@@ -448,6 +448,9 @@ export default function PickerPage() {
       }
       reader.readAsDataURL(file)
     })
+
+    if (cameraInputRef.current) cameraInputRef.current.value = ""
+    if (fileInputRef.current) fileInputRef.current.value = ""
   }
 
   function removePhoto(idx: number) {
@@ -455,6 +458,7 @@ export default function PickerPage() {
     const newPreviews = backupPreviews.filter((_, i) => i !== idx)
     setBackupPhotos(newPhotos)
     setBackupPreviews(newPreviews)
+    if (cameraInputRef.current) cameraInputRef.current.value = ""
     if (fileInputRef.current) fileInputRef.current.value = ""
   }
 
@@ -1058,6 +1062,7 @@ export default function PickerPage() {
                           accept="image/*"
                           capture="environment"
                           onChange={onPhotoSelect}
+                          multiple
                           className="hidden"
                           id="photo-camera-input"
                         />
